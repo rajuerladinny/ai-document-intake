@@ -101,7 +101,7 @@ def test_unknown_client_and_document(service):
 
 def test_ingest_rejects_unsupported_files():
     with pytest.raises(UnsupportedFile):
-        to_text("photo.jpg", b"\xff\xd8")
+        to_text("photo.jpg", b"\xff\xd8")  # photos need the AI extractor
     with pytest.raises(UnsupportedFile):
         to_text("empty.txt", b"")
     assert to_text("a.txt", "Total £1.00".encode()) == "Total £1.00"
@@ -122,3 +122,11 @@ def test_seed_demo_loads_two_clients_once():
     statuses = {d["file_name"]: d["status"] for d in svc.store.list_documents()}
     assert statuses["invoice-brightline.txt"] == "ready"
     assert statuses["receipt-faded.txt"] == "needs_review"
+
+
+def test_correcting_a_figure_reruns_the_checks(service):
+    doc = upload(service, "invoice-kestrel-mismatch.txt")
+    assert {c["id"]: c["passed"] for c in doc["extraction"]["checks"]}["vat_rate"] is False
+    doc = service.correct_field(doc["id"], "vat_amount", "89.60", actor="ana@demo")
+    doc = service.correct_field(doc["id"], "total", "537.60", actor="ana@demo")
+    assert all(c["passed"] for c in doc["extraction"]["checks"])
