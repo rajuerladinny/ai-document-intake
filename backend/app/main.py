@@ -16,7 +16,8 @@ from pydantic import BaseModel, Field
 
 from .ingest import UnsupportedFile
 from .seed import seed_demo
-from .service import IntakeService, InvalidAction, NotFound, validate_doc_types
+from .llm import build_extractor_from_env
+from .service import ExtractionUnavailable, IntakeService, InvalidAction, NotFound, validate_doc_types
 from .store import Store
 
 Actor = Annotated[str, Header(alias="X-User", description="Who is acting. Real sign-in arrives in milestone 3.")]
@@ -36,16 +37,17 @@ class Rejection(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
 
-def create_app(db_path: str | None = None, seed: bool | None = None) -> FastAPI:
+def create_app(db_path: str | None = None, seed: bool | None = None, extractor: Any = None) -> FastAPI:
     store = Store(db_path or os.getenv("DATABASE_PATH", ":memory:"))
-    service = IntakeService(store)
+    # Fails fast at startup if EXTRACTOR=llm is set without a model or key.
+    service = IntakeService(store, extractor or build_extractor_from_env())
     should_seed = seed if seed is not None else os.getenv("SEED_DEMO", "1") == "1"
     if should_seed:
         seed_demo(service)
 
     app = FastAPI(
         title="AI Document Intake API",
-        version="0.1.0",
+        version="0.2.0",
         description="Upload documents, extract fields with confidence scores, review and approve.",
     )
     app.state.service = service
@@ -63,6 +65,10 @@ def create_app(db_path: str | None = None, seed: bool | None = None) -> FastAPI:
     @app.exception_handler(InvalidAction)
     async def _invalid(_: Request, exc: InvalidAction) -> JSONResponse:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(ExtractionUnavailable)
+    async def _unavailable(_: Request, exc: ExtractionUnavailable) -> JSONResponse:
+        return JSONResponse(status_code=503, content={"detail": str(exc)})
 
     @app.exception_handler(UnsupportedFile)
     async def _unsupported(_: Request, exc: UnsupportedFile) -> JSONResponse:

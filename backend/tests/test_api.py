@@ -70,3 +70,21 @@ def test_errors_map_to_http_codes(client):
 def test_reminder_preview(client):
     previews = client.get("/reminders/preview").json()
     assert any(p["client_id"] == "cli_fernhill" for p in previews)
+
+
+def test_ai_extractor_is_reported_and_outages_return_503():
+    from app.llm import LLMError, LLMExtractor, OpenAIProvider
+
+    def down(url, headers, body):
+        raise LLMError("timeout")
+
+    app = create_app(db_path=":memory:", seed=True, extractor=LLMExtractor(OpenAIProvider("m", "k", down)))
+    ai = TestClient(app)
+    assert ai.get("/health").json()["extractor"] == "llm:openai/m"
+    photo = ai.post("/documents", data={"client_id": "cli_harbour"},
+                    files={"file": ("photo.jpg", b"\xff\xd8\xff", "image/jpeg")})
+    assert photo.status_code == 503
+    text = ai.post("/documents", data={"client_id": "cli_harbour"},
+                   files={"file": ("inv.txt", (SAMPLES_DIR / "invoice-brightline.txt").read_bytes(), "text/plain")})
+    assert text.status_code == 201
+    assert text.json()["extractor"] == "rules (AI unavailable)"
