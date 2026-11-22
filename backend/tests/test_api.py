@@ -88,3 +88,13 @@ def test_ai_extractor_is_reported_and_outages_return_503():
                    files={"file": ("inv.txt", (SAMPLES_DIR / "invoice-brightline.txt").read_bytes(), "text/plain")})
     assert text.status_code == 201
     assert text.json()["extractor"] == "rules (AI unavailable)"
+
+
+def test_original_file_is_served_as_plain_text(client):
+    doc = client.get("/documents").json()[0]
+    res = client.get(f"/documents/{doc['id']}/file")
+    assert res.status_code == 200
+    assert res.headers["content-type"].startswith("text/plain")
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert "sandbox" in res.headers["content-security-policy"]
+    assert client.get("/documents/doc_missing/file").status_code == 404

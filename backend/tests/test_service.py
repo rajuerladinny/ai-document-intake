@@ -130,3 +130,13 @@ def test_correcting_a_figure_reruns_the_checks(service):
     doc = service.correct_field(doc["id"], "vat_amount", "89.60", actor="ana@demo")
     doc = service.correct_field(doc["id"], "total", "537.60", actor="ana@demo")
     assert all(c["passed"] for c in doc["extraction"]["checks"])
+
+
+def test_original_file_is_kept_for_the_reviewer(service):
+    doc = upload(service, "receipt-cafe.txt")
+    assert doc["file_media_type"] == "text/plain"
+    media_type, data = service.original_file(doc["id"])
+    assert media_type == "text/plain" and data == (SAMPLES_DIR / "receipt-cafe.txt").read_bytes()
+    assert service.store.list_documents()[0]["file_media_type"] == "text/plain"
+    with pytest.raises(NotFound):
+        service.original_file("doc_missing")

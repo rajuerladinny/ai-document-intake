@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS activity (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_activity_document ON activity(document_id);
+-- Original uploads, kept apart so listing documents stays light.
+CREATE TABLE IF NOT EXISTS files (
+    document_id TEXT PRIMARY KEY REFERENCES documents(id),
+    media_type TEXT NOT NULL,
+    data BLOB NOT NULL
+);
 """
 
 
@@ -118,19 +124,35 @@ class Store:
             )
         return self.get_document(did)  # type: ignore[return-value]
 
+    _DOC_SELECT = (
+        "SELECT d.*, f.media_type AS file_media_type FROM documents d"
+        " LEFT JOIN files f ON f.document_id = d.id"
+    )
+
+    def save_file(self, document_id: str, media_type: str, data: bytes) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT OR REPLACE INTO files (document_id, media_type, data) VALUES (?, ?, ?)",
+                (document_id, media_type, data),
+            )
+
+    def get_file(self, document_id: str) -> tuple[str, bytes] | None:
+        row = self._one("SELECT media_type, data FROM files WHERE document_id = ?", (document_id,))
+        return (row["media_type"], bytes(row["data"])) if row else None
+
     def get_document(self, document_id: str) -> dict[str, Any] | None:
-        row = self._one("SELECT * FROM documents WHERE id = ?", (document_id,))
+        row = self._one(self._DOC_SELECT + " WHERE d.id = ?", (document_id,))
         return self._document(row) if row else None
 
     def list_documents(self, client_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
-        query, params = "SELECT * FROM documents WHERE 1 = 1", []
+        query, params = self._DOC_SELECT + " WHERE 1 = 1", []
         if client_id:
-            query += " AND client_id = ?"
+            query += " AND d.client_id = ?"
             params.append(client_id)
         if status:
-            query += " AND status = ?"
+            query += " AND d.status = ?"
             params.append(status)
-        rows = self._all(query + " ORDER BY uploaded_at DESC, rowid DESC", params)
+        rows = self._all(query + " ORDER BY d.uploaded_at DESC, d.rowid DESC", params)
         return [self._document(r) for r in rows]
 
     def update_document(self, document_id: str, **changes: Any) -> dict[str, Any]:
@@ -159,6 +181,7 @@ class Store:
             "reviewed_by": row["reviewed_by"],
             "reviewed_at": row["reviewed_at"],
             "reject_reason": row["reject_reason"],
+            "file_media_type": row["file_media_type"],
         }
 
     # Activity ----------------------------------------------------------------

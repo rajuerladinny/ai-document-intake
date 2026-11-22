@@ -49,6 +49,8 @@ class IntakeService:
             text, extraction, used = upload.text, self.extractor.extract(upload.text).to_dict(), self.extractor.name
         status = "needs_review" if extraction["needs_review"] else "ready"
         doc = self.store.add_document(client_id, file_name, text, status, extraction, used)
+        self.store.save_file(doc["id"], upload.media_type or "application/octet-stream", data)
+        doc = self.get(doc["id"])
         self.store.log(actor, "uploaded", doc["id"], file_name)
         self.store.log(
             "system", "extracted", doc["id"],
@@ -56,6 +58,13 @@ class IntakeService:
             + (", flagged for review" if status == "needs_review" else ""),
         )
         return doc
+
+    def original_file(self, document_id: str) -> tuple[str, bytes]:
+        found = self.store.get_file(document_id)
+        if found is None:
+            self.get(document_id)  # 404 for unknown documents
+            raise NotFound("The original file is not stored for this document")
+        return found
 
     # Review ------------------------------------------------------------------
 

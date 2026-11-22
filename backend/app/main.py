@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .ingest import UnsupportedFile
@@ -108,6 +108,17 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
     @app.get("/documents/{document_id}")
     def get_document(document_id: str) -> dict[str, Any]:
         return service.get(document_id)
+
+    @app.get("/documents/{document_id}/file")
+    def original_file(document_id: str) -> Response:
+        media_type, data = service.original_file(document_id)
+        if media_type.startswith("text/"):
+            media_type = "text/plain; charset=utf-8"  # never render uploads as HTML
+        headers = {"Content-Disposition": "inline", "X-Content-Type-Options": "nosniff",
+                   "Cache-Control": "private, max-age=300"}
+        if media_type != "application/pdf":  # the browser's PDF viewer does not run in a sandbox
+            headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; sandbox"
+        return Response(data, media_type=media_type, headers=headers)
 
     @app.patch("/documents/{document_id}/fields/{key}")
     def correct_field(document_id: str, key: str, body: FieldCorrection,
