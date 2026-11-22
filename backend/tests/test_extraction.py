@@ -55,3 +55,15 @@ def test_bank_account_number_is_masked():
     account = next(f for f in got.fields if f.key == "account_number")
     assert account.value == "****2819"
     assert "70442819" not in json.dumps(got.to_dict())
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED))
+def test_rule_fields_match_the_field_specs(name):
+    from app.extraction import FIELD_SPECS
+
+    got = extract((SAMPLES_DIR / name).read_text())
+    if got.doc_type == "unknown":
+        assert got.fields == []
+        return
+    spec = [(key, label, required) for key, label, required, _ in FIELD_SPECS[got.doc_type]]
+    assert [(f.key, f.label, f.required) for f in got.fields] == spec
