@@ -2,7 +2,7 @@
 
 The project is built in four milestones. Each one ends with something that works end to end and can be shown to a client.
 
-## Milestone 1: Intake and review workflow ✅ (this release)
+## Milestone 1: Intake and review workflow ✅
 
 - Document classification: invoice, receipt, payslip, bank statement, or unknown.
 - Field extraction with a confidence score and the source line for every field.
@@ -14,14 +14,25 @@ The project is built in four milestones. Each one ends with something that works
 - FastAPI backend with SQLite, the same extraction rules as the browser demo, and tests for both.
 - Live demo on GitHub Pages that runs entirely in the browser.
 
-## Milestone 2: Real AI extraction and file handling
+## Milestone 2: Real AI extraction and file handling (in progress)
 
-- `LLMExtractor` implementing the existing `Extractor` protocol (OpenAI or Claude), returning JSON that is validated against a schema before it is stored.
-- Rule-based checks kept as a safety net on top of the LLM output, so arithmetic errors are still caught.
-- OCR for photos and scanned PDFs (AWS Textract or a vision model).
+Done:
+
+- `LLMExtractor` implementing the existing `Extractor` protocol, for OpenAI (strict JSON schema) or Claude (forced tool call). Standard-library HTTP only, so no SDK lock-in.
+- Every AI value must quote the document; unverified values are capped at 50% confidence.
+- Rule-based checks re-run on the AI output, so arithmetic errors are still caught.
+- `HybridExtractor`: runs AI and rules together and adjusts confidence by whether they agree.
+- Photos and scanned PDFs read through the model's vision input, with a transcript stored for review.
+- Automatic fallback to the rules extractor when the AI API is unavailable.
+- Corrections re-run the checks, so fixing a VAT figure clears the warning.
+- Config through environment variables, with clear errors at startup.
+
+Next:
+
 - PDF and image upload in the web app through the API, with the original file shown next to the fields.
-- PostgreSQL in place of SQLite.
 - The web app switches between demo mode and API mode with one setting.
+- PostgreSQL in place of SQLite.
+- An accuracy report that runs each extractor over a labelled sample set.
 
 ## Milestone 3: Accounts, security and reminders
 
