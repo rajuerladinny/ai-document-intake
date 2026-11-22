@@ -1,0 +1,24 @@
+Brightline Stationery Ltd
+14 Carver Street, Leeds LS2 7HD
+VAT Reg No: GB 284 5521 90
+
+INVOICE
+
+Invoice No: INV-20431
+Invoice Date: 03/11/2026
+Due Date: 03/12/2026
+
+Bill To:
+Harbour & Finch Catering Ltd
+22 Quay Road, Bristol BS1 4QA
+
+Description                     Qty    Unit Price    Amount
+A4 copier paper (box of 5)       12       £24.00      £288.00
+Toner cartridge, black            4       £61.50      £246.00
+Delivery                          1        £9.50        £9.50
+
+Subtotal                                               £543.50
+VAT @ 20%                                              £108.70
+Total Due                                              £652.20
+
+Payment terms: 30 days. Bank transfer to sort code 20-45-77, account 41558890.

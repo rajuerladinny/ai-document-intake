@@ -1,0 +1,135 @@
+{
+  "bank-statement-meridian.txt": {
+    "docType": "bank_statement",
+    "needsReview": false,
+    "overallConfidence": 0.93,
+    "lowConfidenceFields": [],
+    "fields": {
+      "bank": "Meridian Bank plc",
+      "account_holder": "Harbour & Finch Catering Ltd",
+      "sort_code": "30-91-12",
+      "account_number": "****2819",
+      "period_start": "2026-10-01",
+      "period_end": "2026-10-31",
+      "opening_balance": "12480.55",
+      "closing_balance": "12411.59",
+      "currency": "GBP"
+    },
+    "failedChecks": [],
+    "passedChecks": [
+      "reconcile"
+    ]
+  },
+  "invoice-brightline.txt": {
+    "docType": "invoice",
+    "needsReview": false,
+    "overallConfidence": 0.92,
+    "lowConfidenceFields": [],
+    "fields": {
+      "supplier": "Brightline Stationery Ltd",
+      "invoice_number": "INV-20431",
+      "invoice_date": "2026-11-03",
+      "due_date": "2026-12-03",
+      "net_amount": "543.50",
+      "vat_amount": "108.70",
+      "total": "652.20",
+      "currency": "GBP"
+    },
+    "failedChecks": [],
+    "passedChecks": [
+      "sum",
+      "vat_rate"
+    ]
+  },
+  "invoice-kestrel-mismatch.txt": {
+    "docType": "invoice",
+    "needsReview": true,
+    "overallConfidence": 0.7,
+    "lowConfidenceFields": [
+      "due_date"
+    ],
+    "fields": {
+      "supplier": "Kestrel Logistics Ltd",
+      "invoice_number": "KL-7782",
+      "invoice_date": "2026-11-10",
+      "due_date": "2026-11-24",
+      "net_amount": "448.00",
+      "vat_amount": "86.60",
+      "total": "534.60",
+      "currency": "GBP"
+    },
+    "failedChecks": [
+      "vat_rate"
+    ],
+    "passedChecks": [
+      "sum"
+    ]
+  },
+  "letter-unknown.txt": {
+    "docType": "unknown",
+    "needsReview": true,
+    "overallConfidence": 0,
+    "lowConfidenceFields": [],
+    "fields": {},
+    "failedChecks": [],
+    "passedChecks": []
+  },
+  "payslip-harbour.txt": {
+    "docType": "payslip",
+    "needsReview": false,
+    "overallConfidence": 0.93,
+    "lowConfidenceFields": [],
+    "fields": {
+      "employer": "Harbour & Finch Catering Ltd",
+      "employee": "Daniel Okafor",
+      "pay_date": "2026-10-31",
+      "pay_period": "October 2026",
+      "tax_code": "1257L",
+      "gross_pay": "2630.00",
+      "total_deductions": "547.84",
+      "net_pay": "2082.16",
+      "currency": "GBP"
+    },
+    "failedChecks": [],
+    "passedChecks": [
+      "net_pay"
+    ]
+  },
+  "receipt-cafe.txt": {
+    "docType": "receipt",
+    "needsReview": false,
+    "overallConfidence": 0.92,
+    "lowConfidenceFields": [],
+    "fields": {
+      "merchant": "The Copper Kettle Cafe",
+      "date": "2026-11-08",
+      "total": "19.70",
+      "payment_method": "Card",
+      "vat_amount": "3.28",
+      "currency": "GBP"
+    },
+    "failedChecks": [],
+    "passedChecks": [
+      "items_sum"
+    ]
+  },
+  "receipt-faded.txt": {
+    "docType": "receipt",
+    "needsReview": true,
+    "overallConfidence": 0.5,
+    "lowConfidenceFields": [
+      "date",
+      "total"
+    ],
+    "fields": {
+      "merchant": "Fuel Stop 24",
+      "date": null,
+      "total": "46.30",
+      "payment_method": "Cash",
+      "vat_amount": null,
+      "currency": null
+    },
+    "failedChecks": [],
+    "passedChecks": []
+  }
+}
