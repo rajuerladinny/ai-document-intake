@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { TYPE_LABELS } from '../lib/extract';
+import { sourceMatchesLine } from '../lib/connection';
 import { missingRequired } from '../lib/demoStore';
 import type { Client, ExtractedField, IntakeDocument } from '../lib/types';
+import { extractorLabel } from './ConnectionSettings';
 import { ConfidenceChip, StatusBadge, TypeBadge, formatDateTime, maskSensitive } from './ui';
 
 interface Props {
@@ -13,6 +15,29 @@ interface Props {
   onReject: (reason: string) => void;
   onNext: (() => void) | null;
   error: string | null;
+  busy?: boolean;
+}
+
+const RULES_READ = /\s*\[rules read: ([^\]]*)\]\s*$/;
+
+/** The original upload: a photo or PDF shown as-is, next to the text that was read from it. */
+function OriginalFile({ file, fileName }: { file: NonNullable<IntakeDocument['file']>; fileName: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) {
+    return (
+      <p className="empty">
+        The original file couldn’t be loaded. <a href={file.url} target="_blank" rel="noreferrer">Open it in a new tab</a>
+      </p>
+    );
+  }
+  if (file.mediaType === 'application/pdf') {
+    return <iframe className="original original--pdf" src={file.url} title={`Original PDF: ${fileName}`} />;
+  }
+  return (
+    <div className="original">
+      <img src={file.url} alt={`Original upload: ${fileName}`} onError={() => setFailed(true)} />
+    </div>
+  );
 }
 
 function FieldRow({
@@ -56,12 +81,23 @@ function FieldRow({
         />
         {corrected ? <span className="chip chip--corrected">Corrected</span> : <ConfidenceChip value={field.confidence} hasValue={field.value !== null} />}
       </div>
-      {field.source && <p className="field__source">{field.source === '(masked)' ? 'Masked: only the last 4 digits are stored' : `From: “${maskSensitive(field.source)}”`}</p>}
+      {field.source && (
+        <p className="field__source">
+          {field.source === '(masked)'
+            ? 'Masked: only the last 4 digits are stored'
+            : field.source.startsWith('Corrected by')
+              ? field.source
+              : `From: “${maskSensitive(field.source.replace(RULES_READ, ''))}”`}
+        </p>
+      )}
+      {field.source && RULES_READ.test(field.source) && (
+        <p className="field__disagree">AI and rules disagree. Rules read: {maskSensitive(field.source.match(RULES_READ)?.[1] ?? '')}</p>
+      )}
     </div>
   );
 }
 
-export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onReject, onNext, error }: Props) {
+export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onReject, onNext, error, busy = false }: Props) {
   const [highlight, setHighlight] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState(false);
   const [reason, setReason] = useState('');
@@ -70,6 +106,9 @@ export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onRejec
   const missing = missingRequired(doc);
   const failedChecks = extraction.checks.filter((c) => !c.passed);
   const lines = doc.text.split(/\r?\n/);
+  const visual = doc.file && doc.file.mediaType !== 'text/plain' ? doc.file : null;
+  const [view, setView] = useState<'original' | 'text'>(visual ? 'original' : 'text');
+  const showOriginal = visual !== null && view === 'original';
 
   return (
     <div className="review">
@@ -89,17 +128,32 @@ export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onRejec
       <div className="review__grid">
         <section className="paper-wrap" aria-label="Original document">
           <div className="paper-wrap__head">
-            <span>Original document</span>
-            <span className="muted">Hover a field to see where it came from</span>
+            {visual ? (
+              <div className="segmented segmented--small" role="tablist" aria-label="Document view">
+                <button role="tab" aria-selected={showOriginal} className={showOriginal ? 'is-active' : ''} onClick={() => setView('original')}>
+                  Original file
+                </button>
+                <button role="tab" aria-selected={!showOriginal} className={!showOriginal ? 'is-active' : ''} onClick={() => setView('text')}>
+                  Text read
+                </button>
+              </div>
+            ) : (
+              <span>Original document</span>
+            )}
+            <span className="muted">{showOriginal ? 'Shown exactly as uploaded' : 'Hover a field to see where it came from'}</span>
           </div>
-          <pre className="paper">
-            {lines.map((line, i) => (
-              <span key={i} className={highlight && line.trim() === highlight ? 'paper__line is-hit' : 'paper__line'}>
-                {maskSensitive(line) || ' '}
-                {'\n'}
-              </span>
-            ))}
-          </pre>
+          {showOriginal && visual ? (
+            <OriginalFile file={visual} fileName={doc.fileName} />
+          ) : (
+            <pre className="paper">
+              {lines.map((line, i) => (
+                <span key={i} className={sourceMatchesLine(highlight, line) ? 'paper__line is-hit' : 'paper__line'}>
+                  {maskSensitive(line) || ' '}
+                  {'\n'}
+                </span>
+              ))}
+            </pre>
+          )}
         </section>
 
         <section className="panel" aria-label="Extracted data">
@@ -113,6 +167,12 @@ export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onRejec
               <span className="summary__label">Overall confidence</span>
               <strong>{Math.round(extraction.overallConfidence * 100)}%</strong>
             </div>
+            {doc.extractor && (
+              <div>
+                <span className="summary__label">Read by</span>
+                <span className="muted">{extractorLabel(doc.extractor)}</span>
+              </div>
+            )}
           </div>
 
           {extraction.docType === 'unknown' ? (
@@ -196,7 +256,7 @@ export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onRejec
                 onChange={(e) => setReason(e.target.value)}
               />
               <div className="actions">
-                <button className="btn btn--danger" onClick={() => onReject(reason)}>
+                <button className="btn btn--danger" onClick={() => onReject(reason)} disabled={busy}>
                   Reject document
                 </button>
                 <button className="btn btn--ghost" onClick={() => setRejecting(false)}>
@@ -209,7 +269,7 @@ export function ReviewPanel({ doc, client, onBack, onCorrect, onApprove, onRejec
               <button
                 className="btn btn--primary"
                 onClick={onApprove}
-                disabled={extraction.docType === 'unknown'}
+                disabled={extraction.docType === 'unknown' || busy}
                 title={missing.length ? `Missing: ${missing.join(', ')}` : `Approve this ${TYPE_LABELS[extraction.docType].toLowerCase()}`}
               >
                 Approve

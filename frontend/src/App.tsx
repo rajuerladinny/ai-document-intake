@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ActivityView } from './components/ActivityView';
 import { ClientPortal } from './components/ClientPortal';
 import { ClientsView } from './components/ClientsView';
+import { ConnectionSettings, extractorLabel } from './components/ConnectionSettings';
 import { ReviewPanel } from './components/ReviewPanel';
 import { ReviewQueue } from './components/ReviewQueue';
 import {
@@ -13,11 +14,26 @@ import {
   reject,
   type DemoState,
 } from './lib/demoStore';
+import { ApiClient, ApiError } from './lib/api';
+import { initialConnection, saveConnection, type Connection } from './lib/connection';
 import { DEMO_CLIENTS, SAMPLES } from './lib/samples';
-import type { IntakeDocument } from './lib/types';
+import type { IntakeDocument, UploadInput } from './lib/types';
 
 const STORAGE_KEY = 'doc-intake-demo:v1';
 const REVIEWER = 'ana.reviewer@demo';
+const EMPTY: DemoState = { clients: [], documents: [], activity: [] };
+
+function safeStorage(): Storage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function messageOf(e: unknown): string {
+  return e instanceof ActionError || e instanceof ApiError ? e.message : 'Something went wrong.';
+}
 
 type Route =
   | { view: 'queue' }
@@ -64,17 +80,57 @@ function loadState(): DemoState {
 }
 
 export function App() {
-  const [state, setState] = useState<DemoState>(loadState);
+  const [connection, setConnection] = useState<Connection>(() => initialConnection(window.location.search, safeStorage()));
+  const [demoState, setDemoState] = useState<DemoState>(loadState);
+  const [apiState, setApiState] = useState<DemoState | null>(null);
+  const [extractor, setExtractor] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const api = useMemo((): { client: ApiClient | null; problem: string | null } => {
+    if (connection.mode !== 'api') return { client: null, problem: null };
+    try {
+      return { client: new ApiClient(connection.url), problem: null };
+    } catch (e) {
+      return { client: null, problem: messageOf(e) };
+    }
+  }, [connection]);
+  const apiMode = connection.mode === 'api';
+  const state = apiMode ? (apiState ?? EMPTY) : demoState;
 
   useEffect(() => {
+    if (apiMode) return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(demoState));
     } catch {
       // Not fatal: the demo still works for this visit.
     }
-  }, [state]);
+  }, [demoState, apiMode]);
+
+  const refresh = useCallback(async () => {
+    if (!api.client) {
+      setLoadError(api.problem);
+      return;
+    }
+    try {
+      const [health, loaded] = await Promise.all([api.client.health(), api.client.loadState()]);
+      setExtractor(health.extractor);
+      setApiState(loaded);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(messageOf(e));
+    }
+  }, [api]);
+
+  useEffect(() => {
+    setApiState(null);
+    setExtractor(null);
+    setLoadError(null);
+    setError(null);
+    if (apiMode) void refresh();
+  }, [apiMode, refresh]);
 
   useEffect(() => {
     const onHash = () => {
@@ -89,14 +145,65 @@ export function App() {
     window.location.hash = toHash(next);
   }, []);
 
-  const attempt = (action: (s: DemoState) => DemoState): boolean => {
+  const changeConnection = (next: Connection) => {
+    saveConnection(next, safeStorage());
+    setConnection(next);
+  };
+
+  /** Runs a change against the demo state or the API, and reports errors. */
+  const perform = async (
+    demo: (s: DemoState) => DemoState,
+    remote: (client: ApiClient) => Promise<unknown>,
+  ): Promise<boolean> => {
+    setError(null);
+    if (!apiMode) {
+      try {
+        setDemoState(demo(demoState));
+        return true;
+      } catch (e) {
+        setError(messageOf(e));
+        return false;
+      }
+    }
+    if (!api.client || busy) return false;
+    setBusy(true);
     try {
-      setState(action(state));
-      setError(null);
+      await remote(api.client);
+      setApiState(await api.client.loadState());
       return true;
     } catch (e) {
-      setError(e instanceof ActionError ? e.message : 'Something went wrong.');
+      setError(messageOf(e));
       return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const upload = async (clientId: string, input: UploadInput): Promise<IntakeDocument | null> => {
+    const actor = state.clients.find((c) => c.id === clientId)?.contactEmail ?? 'client';
+    setError(null);
+    if (!apiMode) {
+      try {
+        const result = ingest(demoState, clientId, input.fileName, input.text, actor);
+        setDemoState(result.state);
+        return result.doc;
+      } catch (e) {
+        setError(messageOf(e));
+        return null;
+      }
+    }
+    if (!api.client) return null;
+    setBusy(true);
+    try {
+      const file = input.file ?? new File([input.text], input.fileName, { type: 'text/plain' });
+      const doc = await api.client.upload(clientId, file, actor);
+      setApiState(await api.client.loadState());
+      return doc;
+    } catch (e) {
+      setError(messageOf(e));
+      return null;
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -106,13 +213,18 @@ export function App() {
   const nextAfter = (id: string) => toReview.find((d) => d.id !== id) ?? null;
 
   const reset = () => {
-    setState(freshState());
+    setDemoState(freshState());
     setError(null);
     go({ view: 'queue' });
   };
 
   const isReviewer = route.view !== 'portal';
   const current: IntakeDocument | undefined = route.view === 'review' ? state.documents.find((d) => d.id === route.id) : undefined;
+  const firstClientId = state.clients[0]?.id ?? DEMO_CLIENTS[0].id;
+  const portalClientId =
+    route.view === 'portal' && state.clients.some((c) => c.id === route.clientId) ? route.clientId : firstClientId;
+  const loading = apiMode && apiState === null && !loadError;
+  const unavailable = apiMode && apiState === null && loadError !== null;
 
   return (
     <div className="app">
@@ -135,22 +247,53 @@ export function App() {
             role="tab"
             aria-selected={!isReviewer}
             className={!isReviewer ? 'is-active' : ''}
-            onClick={() => go({ view: 'portal', clientId: DEMO_CLIENTS[0].id })}
+            onClick={() => go({ view: 'portal', clientId: firstClientId })}
           >
             Client portal
           </button>
         </div>
 
-        <button className="btn btn--ghost btn--small" onClick={reset} title="Restore the sample data">
-          Reset demo
-        </button>
+        <ConnectionSettings connection={connection} extractor={extractor} connected={apiState !== null && !loadError} onChange={changeConnection} />
+
+        {apiMode ? (
+          <button className="btn btn--ghost btn--small" onClick={() => void refresh()} title="Load the latest documents">
+            Refresh
+          </button>
+        ) : (
+          <button className="btn btn--ghost btn--small" onClick={reset} title="Restore the sample data">
+            Reset demo
+          </button>
+        )}
       </header>
 
-      <div className="demo-note">
-        Live demo: everything runs in your browser with sample documents. Nothing is uploaded anywhere.
-      </div>
+      {apiMode ? (
+        !loadError && (
+        <div className="demo-note demo-note--api">
+          {apiState ? 'Connected to' : 'Connecting to'} the API at {connection.url}
+          {extractor && ` · extraction: ${extractorLabel(extractor)}`}. Documents are stored on that server.
+        </div>
+        )
+      ) : (
+        <div className="demo-note">
+          Live demo: everything runs in your browser with sample documents. Nothing is uploaded anywhere.
+        </div>
+      )}
 
-      {isReviewer && (
+      {loadError && (
+        <div className="notice notice--error notice--bar" role="alert">
+          <span>{loadError}</span>
+          <span className="notice__actions">
+            <button className="btn btn--ghost btn--small" onClick={() => void refresh()}>
+              Try again
+            </button>
+            <button className="btn btn--link" onClick={() => changeConnection({ mode: 'demo' })}>
+              Back to the browser demo
+            </button>
+          </span>
+        </div>
+      )}
+
+      {isReviewer && !unavailable && (
         <nav className="tabs" aria-label="Accountant views">
           <a href="#/queue" className={route.view === 'queue' || route.view === 'review' ? 'is-active' : ''}>
             Review queue
@@ -164,7 +307,8 @@ export function App() {
         </nav>
       )}
 
-      <main className="main">
+      <main className="main" aria-busy={busy || loading} hidden={unavailable}>
+        {loading && <p className="empty">Loading documents from the API…</p>}
         {route.view === 'queue' && <ReviewQueue documents={state.documents} clients={state.clients} onOpen={(id) => go({ view: 'review', id })} />}
 
         {route.view === 'review' &&
@@ -174,45 +318,40 @@ export function App() {
               doc={current}
               client={state.clients.find((c) => c.id === current.clientId)}
               error={error}
+              busy={busy}
               onBack={() => go({ view: 'queue' })}
-              onCorrect={(key, value) => attempt((s) => correctField(s, current.id, key, value, REVIEWER))}
-              onApprove={() => attempt((s) => approve(s, current.id, REVIEWER))}
-              onReject={(reason) => attempt((s) => reject(s, current.id, reason, REVIEWER))}
+              onCorrect={(key, value) => void perform((s) => correctField(s, current.id, key, value, REVIEWER), (c) => c.correctField(current.id, key, value, REVIEWER))}
+              onApprove={() => void perform((s) => approve(s, current.id, REVIEWER), (c) => c.approve(current.id, REVIEWER))}
+              onReject={(reason) => void perform((s) => reject(s, current.id, reason, REVIEWER), (c) => c.reject(current.id, reason, REVIEWER))}
               onNext={nextAfter(current.id) ? () => go({ view: 'review', id: (nextAfter(current.id) as IntakeDocument).id }) : null}
             />
           ) : (
-            <p className="empty">
-              That document isn’t in this demo any more. <a href="#/queue">Back to the queue</a>
-            </p>
+            !loading && (
+              <p className="empty">
+                That document isn’t here any more. <a href="#/queue">Back to the queue</a>
+              </p>
+            )
           ))}
 
         {route.view === 'clients' && <ClientsView state={state} />}
 
         {route.view === 'activity' && <ActivityView activity={state.activity} documents={state.documents} onOpen={(id) => go({ view: 'review', id })} />}
 
-        {route.view === 'portal' && (
+        {route.view === 'portal' && !loading && state.clients.length > 0 && (
           <ClientPortal
             state={state}
-            clientId={route.clientId}
+            clientId={portalClientId}
+            mode={connection.mode}
+            busy={busy}
             error={error}
             onClientChange={(clientId) => go({ view: 'portal', clientId })}
-            onUpload={(fileName, text) => {
-              try {
-                const result = ingest(state, route.clientId, fileName, text, state.clients.find((c) => c.id === route.clientId)?.contactEmail ?? 'client');
-                setState(result.state);
-                setError(null);
-                return result.doc;
-              } catch (e) {
-                setError(e instanceof ActionError ? e.message : 'Something went wrong.');
-                return null;
-              }
-            }}
+            onUpload={(input) => upload(portalClientId, input)}
           />
         )}
       </main>
 
       <footer className="footer">
-        <span>Rule-based extraction in the demo · swap in an LLM extractor through the API</span>
+        <span>{apiMode ? (extractor ? `Extraction: ${extractorLabel(extractor)}` : 'Not connected') : 'Rule-based extraction in the demo · connect the API for PDFs, photos and AI extraction'}</span>
         <a href="https://github.com/rajuerladinny/ai-document-intake">Source on GitHub</a>
       </footer>
     </div>
