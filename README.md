@@ -29,9 +29,11 @@ This project takes a human-in-the-loop approach:
 | **Side-by-side review** | Hover a field to highlight where it came from in the document. Correct a value inline; the correction is recorded with who made it. |
 | **Approve / reject** | Approval is blocked while required fields are missing. A rejection needs a reason, which the client sees. |
 | **Client portal** | A checklist of documents still needed this month, upload, and the status of each document. |
-| **Reminders** | Preview of the reminder email for every client with missing documents. |
+| **Reminders** | Reminder emails to every client with missing documents, sent from the dashboard or on a schedule, at most once a week per client. |
 | **Activity history** | Every upload, extraction, correction, approval and rejection, with time and person. |
 | **AI extraction (API)** | Optional OpenAI or Claude extractor, including photos and scanned PDFs. Every AI value must quote the document line it came from, or it is flagged. The same arithmetic checks run on the AI output, and **hybrid** mode cross-checks the AI against the rules. |
+| **Accounts and roles (API)** | Sign-in for admins, reviewers and clients. Clients only ever see their own business; other clients' documents answer "not found". Original files use short-lived signed links. |
+| **Audit export (API)** | Download the full activity log as CSV for compliance, safe to open in Excel. |
 | **Privacy by default** | Extracted data keeps only the last 4 digits of bank account numbers, and account and National Insurance numbers are masked in the document viewer. |
 
 <table>
@@ -73,6 +75,17 @@ The extractor sits behind a small interface (`Extractor` in `backend/app/extract
   </tr>
 </table>
 
+<table>
+  <tr>
+    <td><img src="docs/screenshots/sign-in.png" alt="Sign-in screen with one-click demo roles" /></td>
+    <td><img src="docs/screenshots/admin-reminders.png" alt="Admin sending reminder emails to clients with missing documents" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Sign-in, with one-click demo roles on a demo server</sub></td>
+    <td align="center"><sub>Admin sends reminders; each send is logged</sub></td>
+  </tr>
+</table>
+
 ## Tech stack
 
 - **Frontend:** React 19, TypeScript (strict), esbuild, hand-written CSS (no UI framework), fully responsive.
@@ -94,6 +107,10 @@ ai-document-intake/
 │   ├── app/llm.py            OpenAI / Claude extractor, hybrid mode, config
 │   ├── app/service.py        Intake, correction, approval, checklist, reminders
 │   ├── app/store.py          PostgreSQL / SQLite persistence
+│   ├── app/auth.py           Passwords, sessions, signed file links
+│   ├── app/access.py         Who may do what (roles, per-client isolation)
+│   ├── app/notify.py         Reminder emails (SMTP) and audit CSV
+│   ├── app/manage.py         Admin commands: create-user, send-reminders
 │   ├── app/main.py           FastAPI routes
 │   └── tests/
 ├── samples/                  Sample documents + expected extraction results
@@ -154,11 +171,44 @@ The AI is never trusted on its own word:
 
 For photos and scans, the model also returns a transcript. Fields are checked against that transcript, which is stored as the document text so the reviewer can see exactly what the model read.
 
+### Accounts, roles and security
+
+With the API, everyone signs in (`AUTH_REQUIRED=1`, the default):
+
+| Role | Can |
+|---|---|
+| **Client** | Upload, see their own checklist, documents and history. Nothing from other clients. |
+| **Reviewer** | Every client: review, correct, approve, reject, activity, reminder previews. |
+| **Admin** | Reviewer rights plus users, clients, sending reminders and audit export. |
+
+- Passwords are hashed with PBKDF2-SHA256 (310,000 rounds, per-user salt). They need 10+ characters, mixed case and a number.
+- Sessions are random bearer tokens that last 12 hours. Only a SHA-256 of each token is stored. Signing out, a password reset or disabling a user ends their sessions.
+- After 5 wrong passwords, sign-in for that email is paused for 15 minutes. Unknown emails get the same answer and timing as wrong passwords.
+- Original files are fetched with signed links that expire after 5 minutes, so images and PDFs load without exposing a token.
+- The web app keeps the session in `sessionStorage`, so it ends when the tab closes.
+
+Create the first admin on a new server:
+
+```bash
+python -m app.manage create-user --email you@yourfirm.com --name "Your Name" --role admin
+```
+
+With `SEED_DEMO=1`, demo accounts for each role are created and shown on the sign-in screen (password `DemoPass2026`, or `DEMO_PASSWORD`). **Never use `SEED_DEMO=1` on a server with real data.** Set `SECRET_KEY` so file links survive restarts. `AUTH_REQUIRED=0` turns sign-in off for local demos only.
+
+### Reminder emails
+
+`POST /reminders/send` (admin) or the **Send reminders** button emails every client with missing documents, skipping anyone reminded in the last 7 days. Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` and `SMTP_FROM` to use any SMTP provider. Without them, emails are written to the log. To send on a schedule, run this from cron or your host's scheduler:
+
+```bash
+python -m app.manage send-reminders            # --dry-run to preview
+```
+
 ### API
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/health` | Status and active extractor |
+| `GET` | `/health` | Status, extractor, database and whether sign-in is required |
+| `POST` | `/auth/login` · `/auth/logout` · `GET /auth/me` | Sign in (returns a bearer token), sign out, current user |
 | `GET` / `POST` | `/clients` | List or create clients and the document types they must send |
 | `GET` | `/clients/{id}/checklist` | Approved / in review / missing, per required document type |
 | `GET` | `/documents?client_id=&status=` | List documents |
@@ -168,9 +218,12 @@ For photos and scans, the model also returns a transcript. Fields are checked ag
 | `POST` | `/documents/{id}/approve` | Approve (409 if required fields are missing) |
 | `POST` | `/documents/{id}/reject` | Reject with a reason |
 | `GET` | `/activity?document_id=` | Activity history |
-| `GET` | `/reminders/preview` | Reminder emails that would go out today |
+| `GET` | `/documents/{id}/file?expires=&sig=` | Original upload, through the signed link included with each document |
+| `GET` | `/reminders/preview` · `POST /reminders/send` | Reminder emails that would go out today · send them (admin) |
+| `GET` | `/audit/export?since=&until=` | Activity log as CSV (admin) |
+| `GET` / `POST` | `/users` · `POST /users/{id}/disable` | Manage sign-ins (admin) |
 
-The `X-User` header records who made each change. Real sign-in arrives in milestone 3.
+Every endpoint except `/health`, `/auth/login` and signed file links needs `Authorization: Bearer <token>`. Changes are recorded under the signed-in user.
 
 ## Roadmap
 
@@ -178,7 +231,7 @@ The `X-User` header records who made each change. Real sign-in arrives in milest
 |---|---|---|
 | 1. Intake and review workflow | Extraction with confidence and checks, review dashboard, client portal, reminders preview, activity history, API, tests, live demo | ✅ Done |
 | 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans, API mode in the web app with PDF and photo upload, PostgreSQL | ✅ Done |
-| 3. Accounts and security | Sign-in and roles, per-client data isolation, EU file storage, scheduled reminder emails | Planned |
+| 3. Accounts and security | Sign-in and roles, per-client data isolation, signed file links, reminder emails (manual and scheduled), audit export ✅ · EU object storage for files next | In progress |
 | 4. Production | Docker, deploy, monitoring, accuracy dashboard, export to CSV / Xero / QuickBooks | Planned |
 
 Details are in [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -188,7 +241,9 @@ Details are in [docs/ROADMAP.md](docs/ROADMAP.md).
 - The rules extractor is tuned to UK-style documents in English. Unusual layouts get a low confidence score and go to review; they are not silently accepted. The AI extractor handles other layouts but costs per document.
 - The hosted demo runs in the browser with the rules extractor and text files. PDFs, photos and AI extraction need the API running (see above).
 - With the AI extractor, document content is sent to the provider you choose. Check their data-retention terms (and use an EU endpoint if needed) before using real client data.
-- There is no authentication yet, so do not use it with real client data until milestone 3.
+- Original files are stored in the database. Moving them to EU object storage (S3-compatible) with encryption at rest is the remaining part of milestone 3.
+- Sessions and the failed-sign-in limit live in one API process. Running several API processes needs a shared limit (milestone 4).
+- Get an independent security review before handling real client data.
 
 ## License
 
