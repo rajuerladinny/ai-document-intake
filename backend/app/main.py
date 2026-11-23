@@ -22,8 +22,9 @@ from .auth import AuthError, Forbidden, User, auth_from_env
 from .ingest import UnsupportedFile
 from .llm import build_extractor_from_env
 from .notify import sender_from_env
-from .seed import demo_password, seed_demo
-from .service import ExtractionUnavailable, IntakeService, InvalidAction, NotFound
+from .seed import DEMO_USERS, demo_password, seed_demo
+from .service import ExtractionUnavailable, IntakeService, InvalidAction, NotFound, StorageUnavailable
+from .storage import storage_from_env
 from .store import Store
 
 EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
@@ -79,7 +80,7 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
     # DATABASE_URL may be a PostgreSQL URL or a SQLite path; DATABASE_PATH is the older name.
     store = Store(db_path or os.getenv("DATABASE_URL") or os.getenv("DATABASE_PATH", ":memory:"))
     # Fails fast at startup if EXTRACTOR=llm is set without a model or key.
-    service = IntakeService(store, extractor or build_extractor_from_env())
+    service = IntakeService(store, extractor or build_extractor_from_env(), storage_from_env())
     should_seed = seed if seed is not None else os.getenv("SEED_DEMO", "1") == "1"
     if should_seed:
         seed_demo(service)
@@ -114,6 +115,7 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
     app.add_exception_handler(InvalidAction, error(409))
     app.add_exception_handler(UnsupportedFile, error(415))
     app.add_exception_handler(ExtractionUnavailable, error(503))
+    app.add_exception_handler(StorageUnavailable, error(503))
 
     @app.exception_handler(ValueError)
     async def _bad_value(_: Request, exc: ValueError) -> JSONResponse:
@@ -125,12 +127,16 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
             "status": "ok",
             "extractor": service.extractor.name,
             "database": store.backend,
+            "file_storage": service.storage.name,
             "auth_required": auth.required,
         }
         if should_seed and auth.required:
             # Demo only: lets the sign-in screen offer the sample accounts.
+            # Only the built-in demo accounts, never users an admin added later.
+            demo_emails = {u["email"] for u in DEMO_USERS}
             info["demo_accounts"] = {"password": demo_password(),
-                                     "emails": [u["email"] for u in store.list_users()]}
+                                     "emails": [u["email"] for u in store.list_users()
+                                                if u["email"] in demo_emails and not u["disabled"]]}
         return info
 
     # Sign-in -------------------------------------------------------------------

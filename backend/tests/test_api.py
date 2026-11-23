@@ -14,7 +14,7 @@ from conftest import SAMPLES_DIR  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for name in ("AUTH_REQUIRED", "DEMO_PASSWORD", "SMTP_HOST", "EXTRACTOR", "DATABASE_URL"):
+    for name in ("AUTH_REQUIRED", "DEMO_PASSWORD", "SMTP_HOST", "EXTRACTOR", "DATABASE_URL", "FILE_STORAGE"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -47,6 +47,7 @@ def harbour(api):
 def test_health_reports_setup_and_demo_accounts(api):
     body = api.get("/health").json()
     assert body["status"] == "ok" and body["extractor"] == "rules" and body["database"] == "sqlite"
+    assert body["file_storage"] == "database"
     assert body["auth_required"] is True
     assert "admin@demo.example" in body["demo_accounts"]["emails"]
 
@@ -138,6 +139,7 @@ def test_admin_creates_a_client_user_who_can_sign_in(api, admin):
     assert weak.status_code == 422
     login = api.post("/auth/login", json={"email": "owner@fernhill.example", "password": "Str0ngPassword"})
     assert login.status_code == 200 and login.json()["user"]["client_id"] == "cli_fernhill"
+    assert "owner@fernhill.example" not in api.get("/health").json()["demo_accounts"]["emails"]
 
 
 def test_original_file_needs_a_valid_signed_link(api, reviewer):
