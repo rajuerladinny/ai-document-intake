@@ -57,6 +57,23 @@ CREATE TABLE IF NOT EXISTS files (
     media_type TEXT NOT NULL,
     data BLOB NOT NULL
 );
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,             -- stored lower-case
+    name TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'reviewer', 'client')),
+    client_id TEXT REFERENCES clients(id),  -- set for client users only
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    disabled INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,            -- SHA-256 of the bearer token; the token itself is never stored
+    user_id TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 """
 
 # Differences from the SQLite schema: binary column type, and an explicit
@@ -67,7 +84,7 @@ PG_SCHEMA = (
     .replace("    detail TEXT\n);", "    detail TEXT,\n    seq BIGSERIAL\n);")
 )
 
-TABLES = ("files", "activity", "documents", "clients")  # child tables first
+TABLES = ("sessions", "users", "files", "activity", "documents", "clients")  # child tables first
 
 
 def is_postgres_url(target: str) -> bool:
@@ -230,6 +247,78 @@ class Store:
             "file_media_type": row["file_media_type"],
         }
 
+    # Users and sessions ------------------------------------------------------
+
+    _USER_COLUMNS = "id, email, name, role, client_id, created_at, disabled"
+
+    def add_user(self, email: str, name: str, role: str, password_hash: str,
+                 client_id: str | None = None) -> dict[str, Any]:
+        uid = new_id("usr")
+        self._write(
+            "INSERT INTO users (id, email, name, role, client_id, password_hash, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (uid, email.strip().lower(), name, role, client_id, password_hash, utc_now()),
+        )
+        return self.get_user(uid)  # type: ignore[return-value]
+
+    def get_user(self, user_id: str) -> dict[str, Any] | None:
+        row = self._one(f"SELECT {self._USER_COLUMNS} FROM users WHERE id = ?", (user_id,))
+        return self._user(row) if row else None
+
+    def user_with_password(self, email: str) -> tuple[dict[str, Any], str] | None:
+        row = self._one(f"SELECT {self._USER_COLUMNS}, password_hash FROM users WHERE email = ?",
+                        (email.strip().lower(),))
+        return (self._user(row), row["password_hash"]) if row else None
+
+    def list_users(self) -> list[dict[str, Any]]:
+        return [self._user(r) for r in self._all(f"SELECT {self._USER_COLUMNS} FROM users ORDER BY email")]
+
+    def update_user(self, user_id: str, **changes: Any) -> dict[str, Any] | None:
+        allowed = {"name", "role", "client_id", "password_hash", "disabled"}
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"Cannot update {sorted(unknown)}")
+        if "disabled" in changes:
+            changes["disabled"] = 1 if changes["disabled"] else 0
+        sets = ", ".join(f"{k} = ?" for k in changes)
+        self._write(f"UPDATE users SET {sets} WHERE id = ?", (*changes.values(), user_id))
+        return self.get_user(user_id)
+
+    @staticmethod
+    def _user(row: Any) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "email": row["email"],
+            "name": row["name"],
+            "role": row["role"],
+            "client_id": row["client_id"],
+            "created_at": row["created_at"],
+            "disabled": str(row["disabled"]) in ("1", "True", "true"),
+        }
+
+    def add_session(self, token_hash: str, user_id: str, expires_at: str) -> None:
+        self._write(
+            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+            (token_hash, user_id, utc_now(), expires_at),
+        )
+
+    def session_user(self, token_hash: str, now: str) -> dict[str, Any] | None:
+        row = self._one(
+            "SELECT u.id FROM sessions s JOIN users u ON u.id = s.user_id"
+            " WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0",
+            (token_hash, now),
+        )
+        return self.get_user(row["id"]) if row else None
+
+    def delete_sessions(self, *, token_hash: str | None = None, user_id: str | None = None) -> None:
+        if token_hash:
+            self._write("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+        if user_id:
+            self._write("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+    def delete_expired_sessions(self, now: str) -> None:
+        self._write("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+
     # Activity ----------------------------------------------------------------
 
     def log(self, actor: str, action: str, document_id: str | None = None, detail: str | None = None) -> None:
@@ -238,20 +327,34 @@ class Store:
             (new_id("act"), utc_now(), actor, action, document_id, detail),
         )
 
-    def activity(self, document_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
-        query, params = "SELECT id, at, actor, action, document_id, detail FROM activity", []
+    def activity(self, document_id: str | None = None, limit: int = 100, *,
+                 since: str | None = None, until: str | None = None,
+                 document_ids: list[str] | None = None) -> list[dict[str, Any]]:
+        query, params = "SELECT id, at, actor, action, document_id, detail FROM activity WHERE 1 = 1", []
         if document_id:
-            query += " WHERE document_id = ?"
+            query += " AND document_id = ?"
             params.append(document_id)
+        if document_ids is not None:
+            if not document_ids:
+                return []
+            query += f" AND document_id IN ({', '.join('?' for _ in document_ids)})"
+            params.extend(document_ids)
+        if since:
+            query += " AND at >= ?"
+            params.append(since)
+        if until:
+            query += " AND at < ?"
+            params.append(until)
         rows = self._all(query + f" ORDER BY at DESC, {self._order} DESC LIMIT ?", (*params, limit))
         keys = ("id", "at", "actor", "action", "document_id", "detail")
         return [{k: r[k] for k in keys} for r in rows]
 
 
 def _statements(script: str) -> Iterable[str]:
-    lines = [line for line in script.splitlines() if not line.strip().startswith("--")]
-    for chunk in "\n".join(lines).split(";"):
-        cleaned = "\n".join(line.split("--")[0] for line in chunk.splitlines()).strip()
+    # Drop "--" comments first: they may contain semicolons. The schema has no string literals.
+    code = "\n".join(line.split("--", 1)[0] for line in script.splitlines())
+    for chunk in code.split(";"):
+        cleaned = chunk.strip()
         if cleaned:
             yield cleaned
 
