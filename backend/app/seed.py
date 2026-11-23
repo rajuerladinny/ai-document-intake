@@ -53,7 +53,7 @@ def seed_demo(service: IntakeService, samples_dir: Path = SAMPLES_DIR) -> None:
         return
     # Demo data always uses the free rule-based extractor, so starting the API
     # with EXTRACTOR=llm does not spend tokens on the sample files.
-    seeder = IntakeService(service.store)
+    seeder = IntakeService(service.store, storage=service.storage)
     for client in DEMO_CLIENTS:
         service.store.add_client(client["name"], client["contact_email"], client["required_types"], client["id"])
         for name in client["files"]:
