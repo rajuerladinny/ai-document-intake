@@ -60,12 +60,23 @@ flowchart LR
     H --> I[Approved data<br/>+ activity history]
 ```
 
-The extractor sits behind a small interface (`Extractor` in `backend/app/extraction.py`). Today it is rule-based, so it is fast, free and predictable, and its output is easy to test. Milestone 2 adds an LLM extractor behind the same interface. The confidence scores, checks, API and review screen stay the same, and the rule-based checks keep catching arithmetic errors in the LLM output.
+The extractor sits behind a small interface (`Extractor` in `backend/app/extraction.py`). The rule-based one is fast, free and predictable. The AI one (OpenAI or Claude, in `backend/app/llm.py`) plugs in behind the same interface, so the confidence scores, checks, API and review screen stay the same, and the rule-based checks keep catching arithmetic errors in the AI's output.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/portal-upload-photo.png" alt="Client portal with a receipt photo ready to send" /></td>
+    <td><img src="docs/screenshots/review-photo-api.png" alt="Reviewing a receipt photo: the original image beside the fields the AI read" /></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>API mode: a client sends a photo of a receipt</sub></td>
+    <td align="center"><sub>The reviewer sees the photo next to what the AI read</sub></td>
+  </tr>
+</table>
 
 ## Tech stack
 
 - **Frontend:** React 19, TypeScript (strict), esbuild, hand-written CSS (no UI framework), fully responsive.
-- **Backend:** Python, FastAPI, SQLite (plain SQL, ready to move to PostgreSQL), pypdf for PDF text.
+- **Backend:** Python, FastAPI, PostgreSQL or SQLite (same queries, chosen by `DATABASE_URL`), pypdf for PDF text.
 - **Testing:** Node's test runner for the TypeScript logic, pytest for the backend. Both extraction engines are checked against the same expected results in `samples/expected.json`, so the browser demo and the API always agree.
 - **CI/CD:** GitHub Actions runs type checks, tests and the build on every push and deploys the demo to GitHub Pages.
 
@@ -76,11 +87,13 @@ ai-document-intake/
 ├── frontend/                 React review dashboard and client portal
 │   ├── src/lib/extract.ts    Classification, extraction, confidence, checks
 │   ├── src/lib/demoStore.ts  In-browser workflow (mirrors the backend service)
+│   ├── src/lib/api.ts        API client used in API mode
 │   └── src/components/       Review queue, review screen, portal, clients, activity
 ├── backend/
 │   ├── app/extraction.py     Same extraction rules in Python + Extractor interface
+│   ├── app/llm.py            OpenAI / Claude extractor, hybrid mode, config
 │   ├── app/service.py        Intake, correction, approval, checklist, reminders
-│   ├── app/store.py          SQLite persistence
+│   ├── app/store.py          PostgreSQL / SQLite persistence
 │   ├── app/main.py           FastAPI routes
 │   └── tests/
 ├── samples/                  Sample documents + expected extraction results
@@ -109,7 +122,18 @@ uvicorn app.main:app --reload     # http://localhost:8000/docs
 pytest
 ```
 
-The API starts with the demo clients and sample documents loaded (always read with the free rules extractor). Set `SEED_DEMO=0` to start empty, `DATABASE_PATH=intake.db` to keep data between restarts, and `CORS_ORIGINS` to allow your frontend's URL.
+The API starts with the demo clients and sample documents loaded (always read with the free rules extractor). Set `SEED_DEMO=0` to start empty and `CORS_ORIGINS` to allow your frontend's URL.
+
+**Database:** `DATABASE_URL` picks it. Leave it unset for in-memory SQLite (resets on restart), set a file path such as `intake.db` for SQLite on disk, or a PostgreSQL URL for real use:
+
+```bash
+docker run -d --name intake-db -e POSTGRES_USER=intake -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=intake -p 5432:5432 postgres:16
+DATABASE_URL=postgresql://intake:change-me@localhost:5432/intake uvicorn app.main:app --reload
+```
+
+Tables are created on first start. CI runs the store, service and AI test suites against PostgreSQL 16 as well as SQLite.
+
+**Use the web app with the API:** start both, then click **Demo data** in the top bar, choose **Connect to the API** and enter `http://localhost:8000`. You can also open `http://localhost:5173/?api=http://localhost:8000`. In API mode clients can upload PDFs and photos, reviewers see the original file next to the extracted fields, and everything is stored by the API. The choice is remembered; switch back to the browser demo at any time.
 
 ### Choosing the extractor
 
@@ -153,7 +177,7 @@ The `X-User` header records who made each change. Real sign-in arrives in milest
 | Milestone | Scope | Status |
 |---|---|---|
 | 1. Intake and review workflow | Extraction with confidence and checks, review dashboard, client portal, reminders preview, activity history, API, tests, live demo | ✅ Done |
-| 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans ✅ · PDF upload in the UI and PostgreSQL next | In progress |
+| 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans, API mode in the web app with PDF and photo upload, PostgreSQL | ✅ Done |
 | 3. Accounts and security | Sign-in and roles, per-client data isolation, EU file storage, scheduled reminder emails | Planned |
 | 4. Production | Docker, deploy, monitoring, accuracy dashboard, export to CSV / Xero / QuickBooks | Planned |
 
@@ -162,7 +186,7 @@ Details are in [docs/ROADMAP.md](docs/ROADMAP.md).
 ## Current limitations
 
 - The rules extractor is tuned to UK-style documents in English. Unusual layouts get a low confidence score and go to review; they are not silently accepted. The AI extractor handles other layouts but costs per document.
-- The browser demo runs the rules extractor on text files and the built-in samples. PDFs, photos and the AI extractor are available through the API; the web app's API mode is next.
+- The hosted demo runs in the browser with the rules extractor and text files. PDFs, photos and AI extraction need the API running (see above).
 - With the AI extractor, document content is sent to the provider you choose. Check their data-retention terms (and use an EU endpoint if needed) before using real client data.
 - There is no authentication yet, so do not use it with real client data until milestone 3.
 

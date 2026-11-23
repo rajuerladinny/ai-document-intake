@@ -35,4 +35,23 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements-dev.txt
-      - run: pytest -q
+      - name: Tests on SQLite
+        run: pytest -q
+      - name: Tests on PostgreSQL
+        run: pytest -q tests/test_store.py tests/test_service.py tests/test_llm.py
+        env:
+          TEST_DATABASE_URL: postgresql://intake:intake@localhost:5432/intake_test
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: intake
+          POSTGRES_PASSWORD: intake
+          POSTGRES_DB: intake_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U intake"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10

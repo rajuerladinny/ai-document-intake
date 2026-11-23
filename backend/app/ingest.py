@@ -23,6 +23,7 @@ class UploadedDocument:
     text: str | None
     #: Raw bytes for files that must be read visually (photos, scanned PDFs).
     binary: bytes | None = None
+    #: MIME type of the original file, used when it is shown to a reviewer.
     media_type: str | None = None
 
     @property
@@ -37,11 +38,11 @@ def read_upload(file_name: str, data: bytes) -> UploadedDocument:
         raise UnsupportedFile("The file is larger than 10 MB.")
     suffix = PurePath(file_name).suffix.lower()
     if suffix in TEXT_SUFFIXES:
-        return UploadedDocument(file_name, data.decode("utf-8", errors="replace"))
+        return UploadedDocument(file_name, data.decode("utf-8", errors="replace"), media_type="text/plain")
     if suffix == ".pdf":
         text = _pdf_text(data)
         if text:
-            return UploadedDocument(file_name, text)
+            return UploadedDocument(file_name, text, media_type="application/pdf")
         # No text layer: probably a scan. An AI extractor can read it visually.
         return UploadedDocument(file_name, None, data, "application/pdf")
     if suffix in IMAGE_TYPES:

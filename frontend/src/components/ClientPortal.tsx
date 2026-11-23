@@ -1,23 +1,32 @@
 import { useState, type ChangeEvent } from 'react';
 import { TYPE_LABELS } from '../lib/extract';
 import { checklist, type DemoState } from '../lib/demoStore';
+import { ACCEPT, checkUpload, type Connection } from '../lib/connection';
 import { SAMPLES } from '../lib/samples';
-import type { IntakeDocument } from '../lib/types';
+import type { IntakeDocument, UploadInput } from '../lib/types';
 import { Card, ChecklistChip, TypeBadge, timeAgo } from './ui';
 
 interface Props {
   state: DemoState;
   clientId: string;
   onClientChange: (id: string) => void;
-  onUpload: (fileName: string, text: string) => IntakeDocument | null;
+  onUpload: (input: UploadInput) => Promise<IntakeDocument | null>;
+  mode: Connection['mode'];
+  busy: boolean;
   error: string | null;
 }
 
-export function ClientPortal({ state, clientId, onClientChange, onUpload, error }: Props) {
+function formatSize(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+export function ClientPortal({ state, clientId, onClientChange, onUpload, mode, busy, error }: Props) {
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState('');
   const [last, setLast] = useState<IntakeDocument | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  /** A PDF or photo, sent as-is (API mode). Text files are read into the text box instead. */
+  const [binary, setBinary] = useState<File | null>(null);
   const client = state.clients.find((c) => c.id === clientId);
   const items = checklist(state, clientId);
   const docs = state.documents.filter((d) => d.clientId === clientId);
@@ -28,6 +37,7 @@ export function ClientPortal({ state, clientId, onClientChange, onUpload, error 
     if (!sample) return;
     setText(sample.text);
     setFileName(sample.fileName);
+    setBinary(null);
     setFileError(null);
   };
 
@@ -35,27 +45,38 @@ export function ClientPortal({ state, clientId, onClientChange, onUpload, error 
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    if (!/\.(txt|csv)$/i.test(file.name)) {
-      setFileError('The browser demo reads .txt files. PDF upload works through the API (see the README).');
-      return;
-    }
-    if (file.size > 1024 * 1024) {
-      setFileError('Please choose a file under 1 MB for the demo.');
+    const problem = checkUpload(file.name, file.size, mode);
+    if (problem) {
+      setFileError(problem);
       return;
     }
     setFileError(null);
-    setText(await file.text());
     setFileName(file.name);
+    if (/\.(txt|csv)$/i.test(file.name)) {
+      setBinary(null);
+      setText(await file.text());
+    } else {
+      setBinary(file);
+      setText('');
+    }
   };
 
-  const submit = () => {
-    const doc = onUpload(fileName || 'pasted-document.txt', text);
+  const clearFile = () => {
+    setBinary(null);
+    setFileName('');
+  };
+
+  const submit = async () => {
+    const doc = await onUpload({ fileName: fileName || 'pasted-document.txt', text, file: binary ?? undefined });
     if (doc) {
       setLast(doc);
       setText('');
       setFileName('');
+      setBinary(null);
     }
   };
+
+  const ready = binary !== null || text.trim().length > 0;
 
   return (
     <div className="portal">
@@ -94,8 +115,8 @@ export function ClientPortal({ state, clientId, onClientChange, onUpload, error 
           <div className="upload">
             <div className="upload__options">
               <label className="btn btn--ghost upload__file">
-                Choose a .txt file
-                <input type="file" accept=".txt,.csv,text/plain" onChange={pickFile} />
+                {mode === 'api' ? 'Choose a PDF, photo or .txt' : 'Choose a .txt file'}
+                <input type="file" accept={ACCEPT[mode]} onChange={pickFile} />
               </label>
               <select value="" onChange={(e) => pickSample(e.target.value)} aria-label="Use a sample document">
                 <option value="" disabled>
@@ -108,21 +129,36 @@ export function ClientPortal({ state, clientId, onClientChange, onUpload, error 
                 ))}
               </select>
             </div>
-            <textarea
-              rows={8}
-              value={text}
-              placeholder="Or paste the text of an invoice, receipt, payslip or bank statement here"
-              onChange={(e) => setText(e.target.value)}
-              aria-label="Document text"
-            />
-            {fileName && <p className="muted">File: {fileName}</p>}
+            {binary ? (
+              <div className="upload__picked">
+                <span className="upload__icon" aria-hidden="true">
+                  {binary.type === 'application/pdf' || /\.pdf$/i.test(binary.name) ? 'PDF' : 'IMG'}
+                </span>
+                <span>
+                  <strong>{binary.name}</strong>
+                  <span className="muted"> · {formatSize(binary.size)}</span>
+                </span>
+                <button className="btn btn--link" onClick={clearFile}>
+                  Remove
+                </button>
+              </div>
+            ) : (
+              <textarea
+                rows={8}
+                value={text}
+                placeholder="Or paste the text of an invoice, receipt, payslip or bank statement here"
+                onChange={(e) => setText(e.target.value)}
+                aria-label="Document text"
+              />
+            )}
+            {fileName && !binary && <p className="muted">File: {fileName}</p>}
             {(fileError || error) && (
               <div className="notice notice--error" role="alert">
                 {fileError ?? error}
               </div>
             )}
-            <button className="btn btn--primary" disabled={!text.trim()} onClick={submit}>
-              Send to my accountant
+            <button className="btn btn--primary" disabled={!ready || busy} onClick={() => void submit()}>
+              {busy ? 'Reading your document…' : 'Send to my accountant'}
             </button>
             {last && (
               <div className="notice notice--ok" role="status">

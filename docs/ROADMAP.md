@@ -14,7 +14,7 @@ The project is built in four milestones. Each one ends with something that works
 - FastAPI backend with SQLite, the same extraction rules as the browser demo, and tests for both.
 - Live demo on GitHub Pages that runs entirely in the browser.
 
-## Milestone 2: Real AI extraction and file handling (in progress)
+## Milestone 2: Real AI extraction and file handling ✅
 
 Done:
 
@@ -26,13 +26,13 @@ Done:
 - Automatic fallback to the rules extractor when the AI API is unavailable.
 - Corrections re-run the checks, so fixing a VAT figure clears the warning.
 - Config through environment variables, with clear errors at startup.
+- The web app switches between the browser demo and the API from the top bar (or a `?api=` link).
+- PDF and photo upload in the client portal through the API.
+- Original files are stored and shown to the reviewer next to the extracted fields, with the text that was read one click away.
 
-Next:
+- PostgreSQL support alongside SQLite, chosen by `DATABASE_URL`, with the same queries. CI tests both.
 
-- PDF and image upload in the web app through the API, with the original file shown next to the fields.
-- The web app switches between demo mode and API mode with one setting.
-- PostgreSQL in place of SQLite.
-- An accuracy report that runs each extractor over a labelled sample set.
+Moved to milestone 4: an accuracy report that runs each extractor over a labelled sample set.
 
 ## Milestone 3: Accounts, security and reminders
 

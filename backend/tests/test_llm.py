@@ -17,8 +17,8 @@ from app.llm import (
     normalise,
 )
 from app.service import ExtractionUnavailable, IntakeService
-from app.store import Store
-from conftest import SAMPLES_DIR
+
+from conftest import SAMPLES_DIR, make_store
 
 PNG = b"\x89PNG\r\n\x1a\nfake"
 
@@ -259,7 +259,7 @@ def test_hybrid_type_disagreement_is_flagged():
 
 
 def make_service(extractor=None):
-    svc = IntakeService(Store(":memory:"), extractor)
+    svc = IntakeService(make_store(), extractor)
     svc.store.add_client("Acme", "a@example.com", ["receipt"], client_id="c1")
     return svc
 

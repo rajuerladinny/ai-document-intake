@@ -11,7 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .ingest import UnsupportedFile
@@ -38,7 +38,8 @@ class Rejection(BaseModel):
 
 
 def create_app(db_path: str | None = None, seed: bool | None = None, extractor: Any = None) -> FastAPI:
-    store = Store(db_path or os.getenv("DATABASE_PATH", ":memory:"))
+    # DATABASE_URL may be a PostgreSQL URL or a SQLite path; DATABASE_PATH is the older name.
+    store = Store(db_path or os.getenv("DATABASE_URL") or os.getenv("DATABASE_PATH", ":memory:"))
     # Fails fast at startup if EXTRACTOR=llm is set without a model or key.
     service = IntakeService(store, extractor or build_extractor_from_env())
     should_seed = seed if seed is not None else os.getenv("SEED_DEMO", "1") == "1"
@@ -76,7 +77,7 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "extractor": service.extractor.name}
+        return {"status": "ok", "extractor": service.extractor.name, "database": store.backend}
 
     @app.get("/clients")
     def list_clients() -> list[dict[str, Any]]:
@@ -108,6 +109,17 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
     @app.get("/documents/{document_id}")
     def get_document(document_id: str) -> dict[str, Any]:
         return service.get(document_id)
+
+    @app.get("/documents/{document_id}/file")
+    def original_file(document_id: str) -> Response:
+        media_type, data = service.original_file(document_id)
+        if media_type.startswith("text/"):
+            media_type = "text/plain; charset=utf-8"  # never render uploads as HTML
+        headers = {"Content-Disposition": "inline", "X-Content-Type-Options": "nosniff",
+                   "Cache-Control": "private, max-age=300"}
+        if media_type != "application/pdf":  # the browser's PDF viewer does not run in a sandbox
+            headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; sandbox"
+        return Response(data, media_type=media_type, headers=headers)
 
     @app.patch("/documents/{document_id}/fields/{key}")
     def correct_field(document_id: str, key: str, body: FieldCorrection,

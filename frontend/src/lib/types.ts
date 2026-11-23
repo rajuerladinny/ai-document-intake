@@ -42,6 +42,10 @@ export interface IntakeDocument {
   reviewedBy?: string;
   reviewedAt?: string;
   rejectReason?: string;
+  /** Which extractor read the document (API mode), e.g. "rules" or "llm:openai/…". */
+  extractor?: string;
+  /** The original upload, when the API keeps it (API mode). */
+  file?: { url: string; mediaType: string };
 }
 
 export interface Client {
@@ -61,4 +65,12 @@ export interface ActivityEntry {
   action: string;
   documentId?: string;
   detail?: string;
+}
+
+export interface UploadInput {
+  fileName: string;
+  /** Text to send, for pasted text, samples and .txt files. */
+  text: string;
+  /** The picked file itself, for PDFs and photos (API mode only). */
+  file?: File;
 }
