@@ -46,6 +46,9 @@ export function toExtraction(raw: Json): Extraction {
 export function toDocument(raw: Json, baseUrl: string): IntakeDocument {
   const id = str(raw.id);
   const mediaType = optStr(raw.file_media_type);
+  // With sign-in on, the API adds a short-lived signed query for the original file.
+  const fileQuery = optStr(raw.file_query);
+  const fileUrl = `${baseUrl}/documents/${encodeURIComponent(id)}/file${fileQuery ? `?${fileQuery}` : ''}`;
   return {
     id,
     clientId: str(raw.client_id),
@@ -58,7 +61,7 @@ export function toDocument(raw: Json, baseUrl: string): IntakeDocument {
     reviewedAt: optStr(raw.reviewed_at),
     rejectReason: optStr(raw.reject_reason),
     extractor: optStr(raw.extractor),
-    file: mediaType ? { mediaType, url: `${baseUrl}/documents/${encodeURIComponent(id)}/file` } : undefined,
+    file: mediaType ? { mediaType, url: fileUrl } : undefined,
   };
 }
 
@@ -97,19 +100,62 @@ export function normaliseBaseUrl(url: string): string {
   return trimmed;
 }
 
+export type Role = 'admin' | 'reviewer' | 'client';
+
+export interface SessionUser {
+  id: string;
+  email: string;
+  name: string;
+  role: Role;
+  clientId: string | null;
+}
+
+export interface Health {
+  status: string;
+  extractor: string;
+  database?: string;
+  authRequired: boolean;
+  demoAccounts?: { password: string; emails: string[] };
+}
+
+export interface ReminderResult {
+  clientId: string;
+  to: string;
+  status: 'sent' | 'skipped' | 'failed' | 'would_send';
+  reason?: string;
+}
+
+export function toUser(raw: Json): SessionUser {
+  const role = str(raw.role);
+  return {
+    id: str(raw.id),
+    email: str(raw.email),
+    name: str(raw.name),
+    role: (role === 'admin' || role === 'reviewer' ? role : 'client') as Role,
+    clientId: optStr(raw.client_id) ?? null,
+  };
+}
+
 export class ApiClient {
   readonly baseUrl: string;
 
   constructor(
     baseUrl: string,
     private readonly fetchImpl: Fetch = (...args) => fetch(...args),
+    /** Bearer token from sign-in, when the API requires it. */
+    private readonly token: string | null = null,
   ) {
     this.baseUrl = normaliseBaseUrl(baseUrl);
   }
 
-  private async request<T>(path: string, init: RequestInit = {}, actor?: string): Promise<T> {
+  /** The same API, signed in with this token. */
+  withToken(token: string | null): ApiClient {
+    return new ApiClient(this.baseUrl, this.fetchImpl, token);
+  }
+
+  private async raw(path: string, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
-    if (actor) headers.set('X-User', actor);
+    if (this.token) headers.set('Authorization', `Bearer ${this.token}`);
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, { ...init, headers });
@@ -117,7 +163,7 @@ export class ApiClient {
       throw new ApiError(`Can't reach the API at ${this.baseUrl}. Is it running, and does CORS_ORIGINS include this page?`, 0);
     }
     if (!res.ok) {
-      let message = `The API returned an error (${res.status}).`;
+      let message = res.status === 403 ? "You don't have permission to do that." : `The API returned an error (${res.status}).`;
       try {
         const body = (await res.json()) as { detail?: unknown };
         if (typeof body.detail === 'string') message = body.detail;
@@ -127,6 +173,11 @@ export class ApiClient {
       }
       throw new ApiError(message, res.status);
     }
+    return res;
+  }
+
+  private async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const res = await this.raw(path, init);
     return (await res.json()) as T;
   }
 
@@ -134,8 +185,47 @@ export class ApiClient {
     return { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   }
 
-  async health(): Promise<{ status: string; extractor: string }> {
-    return this.request('/health');
+  async health(): Promise<Health> {
+    const raw = await this.request<Json>('/health');
+    const demo = raw.demo_accounts as { password?: unknown; emails?: unknown } | undefined;
+    return {
+      status: str(raw.status),
+      extractor: str(raw.extractor),
+      database: optStr(raw.database),
+      // Older API versions had no sign-in.
+      authRequired: raw.auth_required === true,
+      demoAccounts:
+        demo && typeof demo.password === 'string' && Array.isArray(demo.emails)
+          ? { password: demo.password, emails: demo.emails.filter((e): e is string => typeof e === 'string') }
+          : undefined,
+    };
+  }
+
+  async login(email: string, password: string): Promise<{ token: string; user: SessionUser }> {
+    const raw = await this.request<Json>('/auth/login', this.json('POST', { email, password }));
+    return { token: str(raw.token), user: toUser((raw.user ?? {}) as Json) };
+  }
+
+  async logout(): Promise<void> {
+    await this.raw('/auth/logout', { method: 'POST' });
+  }
+
+  async me(): Promise<SessionUser> {
+    return toUser(await this.request<Json>('/auth/me'));
+  }
+
+  async auditCsv(): Promise<string> {
+    return (await this.raw('/audit/export')).text();
+  }
+
+  async sendReminders(dryRun = false): Promise<ReminderResult[]> {
+    const raw = await this.request<{ results?: Json[] }>('/reminders/send', this.json('POST', { dry_run: dryRun }));
+    return (raw.results ?? []).map((r) => ({
+      clientId: str(r.client_id),
+      to: str(r.to),
+      status: str(r.status) as ReminderResult['status'],
+      reason: optStr(r.reason),
+    }));
   }
 
   async loadState(): Promise<DemoState> {
@@ -151,25 +241,27 @@ export class ApiClient {
     };
   }
 
-  async upload(clientId: string, file: File, actor: string): Promise<IntakeDocument> {
+  // The API records who acted from the signed-in user, so no actor is sent.
+
+  async upload(clientId: string, file: File): Promise<IntakeDocument> {
     const form = new FormData();
     form.append('client_id', clientId);
     form.append('file', file, file.name);
-    return toDocument(await this.request<Json>('/documents', { method: 'POST', body: form }, actor), this.baseUrl);
+    return toDocument(await this.request<Json>('/documents', { method: 'POST', body: form }), this.baseUrl);
   }
 
-  async correctField(documentId: string, key: string, value: string, actor: string): Promise<IntakeDocument> {
+  async correctField(documentId: string, key: string, value: string): Promise<IntakeDocument> {
     const path = `/documents/${encodeURIComponent(documentId)}/fields/${encodeURIComponent(key)}`;
-    return toDocument(await this.request<Json>(path, this.json('PATCH', { value }), actor), this.baseUrl);
+    return toDocument(await this.request<Json>(path, this.json('PATCH', { value })), this.baseUrl);
   }
 
-  async approve(documentId: string, actor: string): Promise<IntakeDocument> {
+  async approve(documentId: string): Promise<IntakeDocument> {
     const path = `/documents/${encodeURIComponent(documentId)}/approve`;
-    return toDocument(await this.request<Json>(path, { method: 'POST' }, actor), this.baseUrl);
+    return toDocument(await this.request<Json>(path, { method: 'POST' }), this.baseUrl);
   }
 
-  async reject(documentId: string, reason: string, actor: string): Promise<IntakeDocument> {
+  async reject(documentId: string, reason: string): Promise<IntakeDocument> {
     const path = `/documents/${encodeURIComponent(documentId)}/reject`;
-    return toDocument(await this.request<Json>(path, this.json('POST', { reason }), actor), this.baseUrl);
+    return toDocument(await this.request<Json>(path, this.json('POST', { reason })), this.baseUrl);
   }
 }

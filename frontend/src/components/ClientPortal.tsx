@@ -14,13 +14,15 @@ interface Props {
   mode: Connection['mode'];
   busy: boolean;
   error: string | null;
+  /** A signed-in client user: no switching to other clients. */
+  lockedToClient?: boolean;
 }
 
 function formatSize(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function ClientPortal({ state, clientId, onClientChange, onUpload, mode, busy, error }: Props) {
+export function ClientPortal({ state, clientId, onClientChange, onUpload, mode, busy, error, lockedToClient = false }: Props) {
   const [text, setText] = useState('');
   const [fileName, setFileName] = useState('');
   const [last, setLast] = useState<IntakeDocument | null>(null);
@@ -88,16 +90,18 @@ export function ClientPortal({ state, clientId, onClientChange, onUpload, mode, 
             {done} of {items.length} documents approved for this month
           </p>
         </div>
-        <label className="select">
-          <span>Viewing as</span>
-          <select value={clientId} onChange={(e) => onClientChange(e.target.value)}>
-            {state.clients.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        {!lockedToClient && (
+          <label className="select">
+            <span>Viewing as</span>
+            <select value={clientId} onChange={(e) => onClientChange(e.target.value)}>
+              {state.clients.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
       </div>
 
       <div className="portal__grid">
