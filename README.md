@@ -76,7 +76,7 @@ The extractor sits behind a small interface (`Extractor` in `backend/app/extract
 ## Tech stack
 
 - **Frontend:** React 19, TypeScript (strict), esbuild, hand-written CSS (no UI framework), fully responsive.
-- **Backend:** Python, FastAPI, SQLite (plain SQL, ready to move to PostgreSQL), pypdf for PDF text.
+- **Backend:** Python, FastAPI, PostgreSQL or SQLite (same queries, chosen by `DATABASE_URL`), pypdf for PDF text.
 - **Testing:** Node's test runner for the TypeScript logic, pytest for the backend. Both extraction engines are checked against the same expected results in `samples/expected.json`, so the browser demo and the API always agree.
 - **CI/CD:** GitHub Actions runs type checks, tests and the build on every push and deploys the demo to GitHub Pages.
 
@@ -93,7 +93,7 @@ ai-document-intake/
 │   ├── app/extraction.py     Same extraction rules in Python + Extractor interface
 │   ├── app/llm.py            OpenAI / Claude extractor, hybrid mode, config
 │   ├── app/service.py        Intake, correction, approval, checklist, reminders
-│   ├── app/store.py          SQLite persistence
+│   ├── app/store.py          PostgreSQL / SQLite persistence
 │   ├── app/main.py           FastAPI routes
 │   └── tests/
 ├── samples/                  Sample documents + expected extraction results
@@ -122,7 +122,16 @@ uvicorn app.main:app --reload     # http://localhost:8000/docs
 pytest
 ```
 
-The API starts with the demo clients and sample documents loaded (always read with the free rules extractor). Set `SEED_DEMO=0` to start empty, `DATABASE_PATH=intake.db` to keep data between restarts, and `CORS_ORIGINS` to allow your frontend's URL.
+The API starts with the demo clients and sample documents loaded (always read with the free rules extractor). Set `SEED_DEMO=0` to start empty and `CORS_ORIGINS` to allow your frontend's URL.
+
+**Database:** `DATABASE_URL` picks it. Leave it unset for in-memory SQLite (resets on restart), set a file path such as `intake.db` for SQLite on disk, or a PostgreSQL URL for real use:
+
+```bash
+docker run -d --name intake-db -e POSTGRES_USER=intake -e POSTGRES_PASSWORD=change-me -e POSTGRES_DB=intake -p 5432:5432 postgres:16
+DATABASE_URL=postgresql://intake:change-me@localhost:5432/intake uvicorn app.main:app --reload
+```
+
+Tables are created on first start. CI runs the store, service and AI test suites against PostgreSQL 16 as well as SQLite.
 
 **Use the web app with the API:** start both, then click **Demo data** in the top bar, choose **Connect to the API** and enter `http://localhost:8000`. You can also open `http://localhost:5173/?api=http://localhost:8000`. In API mode clients can upload PDFs and photos, reviewers see the original file next to the extracted fields, and everything is stored by the API. The choice is remembered; switch back to the browser demo at any time.
 
@@ -168,7 +177,7 @@ The `X-User` header records who made each change. Real sign-in arrives in milest
 | Milestone | Scope | Status |
 |---|---|---|
 | 1. Intake and review workflow | Extraction with confidence and checks, review dashboard, client portal, reminders preview, activity history, API, tests, live demo | ✅ Done |
-| 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans, API mode in the web app with PDF and photo upload ✅ · PostgreSQL next | In progress |
+| 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans, API mode in the web app with PDF and photo upload, PostgreSQL | ✅ Done |
 | 3. Accounts and security | Sign-in and roles, per-client data isolation, EU file storage, scheduled reminder emails | Planned |
 | 4. Production | Docker, deploy, monitoring, accuracy dashboard, export to CSV / Xero / QuickBooks | Planned |
 
