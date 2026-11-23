@@ -5,6 +5,7 @@ import { ClientsView } from './components/ClientsView';
 import { ConnectionSettings, extractorLabel } from './components/ConnectionSettings';
 import { ReviewPanel } from './components/ReviewPanel';
 import { ReviewQueue } from './components/ReviewQueue';
+import { SignIn } from './components/SignIn';
 import {
   ActionError,
   approve,
@@ -14,8 +15,8 @@ import {
   reject,
   type DemoState,
 } from './lib/demoStore';
-import { ApiClient, ApiError } from './lib/api';
-import { initialConnection, saveConnection, type Connection } from './lib/connection';
+import { ApiClient, ApiError, type Health, type ReminderResult, type SessionUser } from './lib/api';
+import { initialConnection, loadSession, saveConnection, saveSession, type Connection } from './lib/connection';
 import { DEMO_CLIENTS, SAMPLES } from './lib/samples';
 import type { IntakeDocument, UploadInput } from './lib/types';
 
@@ -29,6 +30,25 @@ function safeStorage(): Storage | null {
   } catch {
     return null;
   }
+}
+
+function safeSessionStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+function downloadText(text: string, fileName: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function messageOf(e: unknown): string {
@@ -83,13 +103,19 @@ export function App() {
   const [connection, setConnection] = useState<Connection>(() => initialConnection(window.location.search, safeStorage()));
   const [demoState, setDemoState] = useState<DemoState>(loadState);
   const [apiState, setApiState] = useState<DemoState | null>(null);
-  const [extractor, setExtractor] = useState<string | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [token, setToken] = useState<string | null>(() => {
+    const initial = initialConnection(window.location.search, safeStorage());
+    return initial.mode === 'api' ? loadSession(initial.url, safeSessionStorage()) : null;
+  });
+  const [user, setUser] = useState<SessionUser | null>(null);
+  const [signInNotice, setSignInNotice] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => parseHash(window.location.hash));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const api = useMemo((): { client: ApiClient | null; problem: string | null } => {
+  const base = useMemo((): { client: ApiClient | null; problem: string | null } => {
     if (connection.mode !== 'api') return { client: null, problem: null };
     try {
       return { client: new ApiClient(connection.url), problem: null };
@@ -97,8 +123,25 @@ export function App() {
       return { client: null, problem: messageOf(e) };
     }
   }, [connection]);
+  const api = useMemo(() => ({ ...base, client: base.client?.withToken(token) ?? null }), [base, token]);
   const apiMode = connection.mode === 'api';
   const state = apiMode ? (apiState ?? EMPTY) : demoState;
+  const extractor = health?.extractor ?? null;
+  const needsSignIn = apiMode && health?.authRequired === true && !user;
+  const isClientUser = apiMode && user?.role === 'client';
+  const isAdmin = !apiMode || !health?.authRequired || user?.role === 'admin';
+
+  /** Forget the session (expired, or signed out) and show the sign-in screen. */
+  const dropSession = useCallback(
+    (notice: string | null) => {
+      if (connection.mode === 'api') saveSession(null, safeSessionStorage());
+      setToken(null);
+      setUser(null);
+      setApiState(null);
+      setSignInNotice(notice);
+    },
+    [connection],
+  );
 
   useEffect(() => {
     if (apiMode) return;
@@ -115,22 +158,64 @@ export function App() {
       return;
     }
     try {
-      const [health, loaded] = await Promise.all([api.client.health(), api.client.loadState()]);
-      setExtractor(health.extractor);
-      setApiState(loaded);
+      const info = await api.client.health();
+      setHealth(info);
       setLoadError(null);
+      if (info.authRequired && !token) {
+        setApiState(null);
+        setUser(null);
+        return; // the sign-in screen shows
+      }
+      const [me, loaded] = await Promise.all([info.authRequired ? api.client.me() : Promise.resolve(null), api.client.loadState()]);
+      setUser(me);
+      setApiState(loaded);
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        dropSession('Your session has ended. Please sign in again.');
+        return;
+      }
       setLoadError(messageOf(e));
     }
-  }, [api]);
+  }, [api, token, dropSession]);
 
   useEffect(() => {
     setApiState(null);
-    setExtractor(null);
     setLoadError(null);
     setError(null);
     if (apiMode) void refresh();
+    else setHealth(null);
   }, [apiMode, refresh]);
+
+  // A client user only has their own portal.
+  useEffect(() => {
+    if (isClientUser && user?.clientId && (route.view !== 'portal' || route.clientId !== user.clientId)) {
+      window.location.hash = toHash({ view: 'portal', clientId: user.clientId });
+    }
+  }, [isClientUser, user, route]);
+
+  const signIn = async (email: string, password: string): Promise<string | null> => {
+    if (!base.client || connection.mode !== 'api') return 'Not connected to an API.';
+    try {
+      const result = await base.client.login(email, password);
+      saveSession({ url: connection.url, token: result.token }, safeSessionStorage());
+      setSignInNotice(null);
+      setToken(result.token); // triggers refresh with the new token
+      setRoute(parseHash(window.location.hash));
+      return null;
+    } catch (e) {
+      return messageOf(e);
+    }
+  };
+
+  const signOut = async () => {
+    try {
+      await api.client?.logout();
+    } catch {
+      // Signing out locally is what matters.
+    }
+    dropSession(null);
+    window.location.hash = '#/queue';
+  };
 
   useEffect(() => {
     const onHash = () => {
@@ -147,7 +232,16 @@ export function App() {
 
   const changeConnection = (next: Connection) => {
     saveConnection(next, safeStorage());
+    setToken(next.mode === 'api' ? loadSession(next.url, safeSessionStorage()) : null);
+    setUser(null);
+    setHealth(null);
     setConnection(next);
+  };
+
+  /** Turns an API error into a message, signing out if the session has ended. */
+  const handleApiError = (e: unknown) => {
+    if (e instanceof ApiError && e.status === 401) dropSession('Your session has ended. Please sign in again.');
+    else setError(messageOf(e));
   };
 
   /** Runs a change against the demo state or the API, and reports errors. */
@@ -172,7 +266,7 @@ export function App() {
       setApiState(await api.client.loadState());
       return true;
     } catch (e) {
-      setError(messageOf(e));
+      handleApiError(e);
       return false;
     } finally {
       setBusy(false);
@@ -196,11 +290,11 @@ export function App() {
     setBusy(true);
     try {
       const file = input.file ?? new File([input.text], input.fileName, { type: 'text/plain' });
-      const doc = await api.client.upload(clientId, file, actor);
+      const doc = await api.client.upload(clientId, file);
       setApiState(await api.client.loadState());
       return doc;
     } catch (e) {
-      setError(messageOf(e));
+      handleApiError(e);
       return null;
     } finally {
       setBusy(false);
@@ -223,8 +317,30 @@ export function App() {
   const firstClientId = state.clients[0]?.id ?? DEMO_CLIENTS[0].id;
   const portalClientId =
     route.view === 'portal' && state.clients.some((c) => c.id === route.clientId) ? route.clientId : firstClientId;
-  const loading = apiMode && apiState === null && !loadError;
+  const loading = apiMode && apiState === null && !loadError && !needsSignIn;
   const unavailable = apiMode && apiState === null && loadError !== null;
+
+  const sendReminders = async (): Promise<ReminderResult[] | null> => {
+    if (!api.client) return null;
+    try {
+      const results = await api.client.sendReminders();
+      setApiState(await api.client.loadState());
+      return results;
+    } catch (e) {
+      handleApiError(e);
+      return null;
+    }
+  };
+
+  const exportAudit = async () => {
+    if (!api.client) return;
+    try {
+      downloadText(await api.client.auditCsv(), `audit-log-${new Date().toISOString().slice(0, 10)}.csv`, 'text/csv');
+      setApiState(await api.client.loadState());
+    } catch (e) {
+      handleApiError(e);
+    }
+  };
 
   return (
     <div className="app">
@@ -239,6 +355,7 @@ export function App() {
           </div>
         </div>
 
+        {!isClientUser && !needsSignIn && (
         <div className="segmented segmented--roles" role="tablist" aria-label="Switch role">
           <button role="tab" aria-selected={isReviewer} className={isReviewer ? 'is-active' : ''} onClick={() => go({ view: 'queue' })}>
             Accountant
@@ -252,13 +369,29 @@ export function App() {
             Client portal
           </button>
         </div>
+        )}
 
-        <ConnectionSettings connection={connection} extractor={extractor} connected={apiState !== null && !loadError} onChange={changeConnection} />
+        <ConnectionSettings connection={connection} extractor={extractor} connected={health !== null && !loadError} onChange={changeConnection} />
+
+        {user && (
+          <span className="who">
+            <span className="who__name">{user.name}</span>
+            <span className="who__role">{user.role}</span>
+          </span>
+        )}
 
         {apiMode ? (
-          <button className="btn btn--ghost btn--small" onClick={() => void refresh()} title="Load the latest documents">
-            Refresh
-          </button>
+          user ? (
+            <button className="btn btn--ghost btn--small" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          ) : (
+            !needsSignIn && (
+              <button className="btn btn--ghost btn--small" onClick={() => void refresh()} title="Load the latest documents">
+                Refresh
+              </button>
+            )
+          )
         ) : (
           <button className="btn btn--ghost btn--small" onClick={reset} title="Restore the sample data">
             Reset demo
@@ -269,7 +402,7 @@ export function App() {
       {apiMode ? (
         !loadError && (
         <div className="demo-note demo-note--api">
-          {apiState ? 'Connected to' : 'Connecting to'} the API at {connection.url}
+          {apiState || needsSignIn ? 'Connected to' : 'Connecting to'} the API at {connection.url}
           {extractor && ` · extraction: ${extractorLabel(extractor)}`}. Documents are stored on that server.
         </div>
         )
@@ -293,7 +426,17 @@ export function App() {
         </div>
       )}
 
-      {isReviewer && !unavailable && (
+      {needsSignIn && connection.mode === 'api' && (
+        <SignIn
+          apiUrl={connection.url}
+          demoAccounts={health?.demoAccounts}
+          notice={signInNotice}
+          onSignIn={signIn}
+          onUseDemo={() => changeConnection({ mode: 'demo' })}
+        />
+      )}
+
+      {isReviewer && !unavailable && !needsSignIn && !isClientUser && (
         <nav className="tabs" aria-label="Accountant views">
           <a href="#/queue" className={route.view === 'queue' || route.view === 'review' ? 'is-active' : ''}>
             Review queue
@@ -307,9 +450,9 @@ export function App() {
         </nav>
       )}
 
-      <main className="main" aria-busy={busy || loading} hidden={unavailable}>
+      <main className="main" aria-busy={busy || loading} hidden={unavailable || needsSignIn}>
         {loading && <p className="empty">Loading documents from the API…</p>}
-        {route.view === 'queue' && <ReviewQueue documents={state.documents} clients={state.clients} onOpen={(id) => go({ view: 'review', id })} />}
+        {route.view === 'queue' && !isClientUser && <ReviewQueue documents={state.documents} clients={state.clients} onOpen={(id) => go({ view: 'review', id })} />}
 
         {route.view === 'review' &&
           (current ? (
@@ -320,9 +463,9 @@ export function App() {
               error={error}
               busy={busy}
               onBack={() => go({ view: 'queue' })}
-              onCorrect={(key, value) => void perform((s) => correctField(s, current.id, key, value, REVIEWER), (c) => c.correctField(current.id, key, value, REVIEWER))}
-              onApprove={() => void perform((s) => approve(s, current.id, REVIEWER), (c) => c.approve(current.id, REVIEWER))}
-              onReject={(reason) => void perform((s) => reject(s, current.id, reason, REVIEWER), (c) => c.reject(current.id, reason, REVIEWER))}
+              onCorrect={(key, value) => void perform((s) => correctField(s, current.id, key, value, REVIEWER), (c) => c.correctField(current.id, key, value))}
+              onApprove={() => void perform((s) => approve(s, current.id, REVIEWER), (c) => c.approve(current.id))}
+              onReject={(reason) => void perform((s) => reject(s, current.id, reason, REVIEWER), (c) => c.reject(current.id, reason))}
               onNext={nextAfter(current.id) ? () => go({ view: 'review', id: (nextAfter(current.id) as IntakeDocument).id }) : null}
             />
           ) : (
@@ -333,9 +476,18 @@ export function App() {
             )
           ))}
 
-        {route.view === 'clients' && <ClientsView state={state} />}
+        {route.view === 'clients' && !isClientUser && (
+          <ClientsView state={state} onSendReminders={apiMode && isAdmin ? sendReminders : undefined} />
+        )}
 
-        {route.view === 'activity' && <ActivityView activity={state.activity} documents={state.documents} onOpen={(id) => go({ view: 'review', id })} />}
+        {route.view === 'activity' && !isClientUser && (
+          <ActivityView
+            activity={state.activity}
+            documents={state.documents}
+            onOpen={(id) => go({ view: 'review', id })}
+            onExport={apiMode && isAdmin ? () => void exportAudit() : undefined}
+          />
+        )}
 
         {route.view === 'portal' && !loading && state.clients.length > 0 && (
           <ClientPortal
@@ -344,6 +496,7 @@ export function App() {
             mode={connection.mode}
             busy={busy}
             error={error}
+            lockedToClient={isClientUser}
             onClientChange={(clientId) => go({ view: 'portal', clientId })}
             onUpload={(input) => upload(portalClientId, input)}
           />

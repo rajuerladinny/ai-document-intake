@@ -1274,6 +1274,109 @@ textarea {
   color: #7c3d06;
 }
 
+/* Sign-in and signed-in user ------------------------------------------------------- */
+
+.signin {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  place-items: start center;
+  padding: 48px 16px;
+}
+
+.signin__card {
+  box-sizing: border-box;
+  display: grid;
+  gap: 14px;
+  width: min(420px, 100%);
+  padding: 28px;
+}
+
+.signin__title {
+  font-size: 22px;
+}
+
+.signin__sub {
+  margin-top: -8px;
+  overflow-wrap: anywhere;
+}
+
+.signin__field {
+  display: grid;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.signin__field input {
+  padding: 10px 12px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 400;
+}
+
+.signin__field input:focus {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.signin__submit {
+  width: 100%;
+}
+
+.signin__demo {
+  display: grid;
+  gap: 8px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.signin__accounts {
+  display: grid;
+  gap: 6px;
+}
+
+.signin__accounts .btn {
+  white-space: normal;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.signin__back {
+  justify-self: center;
+}
+
+.who {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.2;
+  font-size: 13px;
+}
+
+.who__name {
+  font-weight: 600;
+}
+
+.who__role {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: capitalize;
+}
+
+.card__actions-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.reminder-results {
+  display: grid;
+  gap: 4px;
+  padding-left: 18px;
+}
+
 @media (max-width: 960px) {
   .kpis {
     grid-template-columns: repeat(2, minmax(0, 1fr));

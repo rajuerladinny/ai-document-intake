@@ -69,3 +69,31 @@ export function sourceMatchesLine(source: string | null, line: string): boolean 
   if (!quote || !text) return false;
   return text === quote || (quote.length >= 3 && text.includes(quote)) || (text.length >= 6 && quote.includes(text));
 }
+
+/** A signed-in session for one API address. Kept in sessionStorage, so it ends when the tab closes. */
+export interface StoredSession {
+  url: string;
+  token: string;
+}
+
+export const SESSION_KEY = 'doc-intake-session:v1';
+
+export function loadSession(url: string, storage: StorageLike | null): string | null {
+  try {
+    const raw = storage?.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredSession>;
+    return parsed.url === url && typeof parsed.token === 'string' && parsed.token ? parsed.token : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveSession(session: StoredSession | null, storage: StorageLike | null): void {
+  try {
+    if (session) storage?.setItem(SESSION_KEY, JSON.stringify(session));
+    else storage?.setItem(SESSION_KEY, '');
+  } catch {
+    // Not fatal: the user signs in again next time.
+  }
+}

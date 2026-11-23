@@ -58,7 +58,7 @@ def test_reset_clears_everything(store):
 
 def test_postgres_schema_has_order_columns_and_bytea():
     statements = list(_statements(PG_SCHEMA))
-    assert len(statements) == 7
+    assert len(statements) == 10  # 6 tables + 4 indexes
     assert "BYTEA" in PG_SCHEMA and PG_SCHEMA.count("seq BIGSERIAL") == 2
 
 
@@ -77,3 +77,8 @@ def test_postgres_url_without_driver_or_server_explains_itself():
     else:
         with pytest.raises(StoreConfigError, match="Could not connect"):
             Store("postgresql://nobody@127.0.0.1:1/none?connect_timeout=1")
+
+
+def test_schema_splitter_ignores_semicolons_in_comments():
+    script = "CREATE TABLE a (x TEXT -- note; with semicolon\n);\n-- a whole comment; line\nCREATE INDEX i ON a(x);"
+    assert list(_statements(script)) == ["CREATE TABLE a (x TEXT \n)", "CREATE INDEX i ON a(x)"]

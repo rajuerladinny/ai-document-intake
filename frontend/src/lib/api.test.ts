@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiClient, ApiError, normaliseBaseUrl, toDocument } from './api';
-import { checkUpload, initialConnection, saveConnection, sourceMatchesLine, CONNECTION_KEY } from './connection';
+import { checkUpload, initialConnection, loadSession, saveConnection, saveSession, sourceMatchesLine, CONNECTION_KEY } from './connection';
 import { checklist } from './demoStore';
 
 const apiDoc = {
@@ -72,20 +72,22 @@ test('loadState builds a state the existing screens can use', async () => {
   );
 });
 
-test('actions send the reviewer and the right method and body', async () => {
+test('actions send the token and the right method and body', async () => {
   const calls: Call[] = [];
   const api = new ApiClient(
     'http://api.test',
     fakeFetch({ '/fields/vat_amount': { body: apiDoc }, '/approve': { body: apiDoc }, '/reject': { body: apiDoc }, '/documents': { body: apiDoc } }, calls),
-  );
-  await api.correctField('doc_1', 'vat_amount', '89.60', 'ana@demo');
-  await api.approve('doc_1', 'ana@demo');
-  await api.reject('doc_1', 'Blurry', 'ana@demo');
-  await api.upload('cli_harbour', new File(['Total £1.00'], 'r.txt', { type: 'text/plain' }), 'client@x');
+  ).withToken('tok_123');
+  await api.correctField('doc_1', 'vat_amount', '89.60');
+  await api.approve('doc_1');
+  await api.reject('doc_1', 'Blurry');
+  await api.upload('cli_harbour', new File(['Total £1.00'], 'r.txt', { type: 'text/plain' }));
 
   assert.equal(calls[0].init.method, 'PATCH');
   assert.equal(calls[0].init.body, JSON.stringify({ value: '89.60' }));
-  assert.equal(new Headers(calls[0].init.headers).get('X-User'), 'ana@demo');
+  const headers = new Headers(calls[0].init.headers);
+  assert.equal(headers.get('Authorization'), 'Bearer tok_123');
+  assert.equal(headers.get('X-User'), null);
   assert.ok(calls[1].url.endsWith('/documents/doc_1/approve'));
   assert.equal(calls[2].init.body, JSON.stringify({ reason: 'Blurry' }));
   const form = calls[3].init.body as FormData;
@@ -95,7 +97,7 @@ test('actions send the reviewer and the right method and body', async () => {
 
 test('API error details reach the user', async () => {
   const api = new ApiClient('http://api.test', fakeFetch({ '/approve': { status: 409, body: { detail: 'Fill in the required fields first: Date.' } } }));
-  await assert.rejects(api.approve('doc_1', 'ana'), (e: unknown) => e instanceof ApiError && e.status === 409 && /required fields/.test(e.message));
+  await assert.rejects(api.approve('doc_1'), (e: unknown) => e instanceof ApiError && e.status === 409 && /required fields/.test(e.message));
 });
 
 test('an unreachable API gives a helpful message', async () => {
@@ -139,4 +141,60 @@ test('AI quotes and hybrid sources highlight the right line', () => {
   assert.ok(!sourceMatchesLine('Total', ''));
   assert.ok(!sourceMatchesLine(null, 'Total'));
   assert.ok(!sourceMatchesLine('£86.60', 'Net amount £448.00'));
+});
+
+test('sign-in, health and roles are read from the API', async () => {
+  const calls: Call[] = [];
+  const api = new ApiClient(
+    'http://api.test',
+    fakeFetch(
+      {
+        '/auth/login': { body: { token: 'tok_9', user: { id: 'u1', email: 'a@x.com', name: 'A', role: 'client', client_id: 'cli_harbour' } } },
+        '/health': { body: { status: 'ok', extractor: 'rules', auth_required: true, demo_accounts: { password: 'p', emails: ['a@x.com', 7] } } },
+      },
+      calls,
+    ),
+  );
+  const { token, user } = await api.login('a@x.com', 'secret');
+  assert.equal(token, 'tok_9');
+  assert.deepEqual(user, { id: 'u1', email: 'a@x.com', name: 'A', role: 'client', clientId: 'cli_harbour' });
+  assert.equal(calls[0].init.body, JSON.stringify({ email: 'a@x.com', password: 'secret' }));
+  const health = await api.health();
+  assert.equal(health.authRequired, true);
+  assert.deepEqual(health.demoAccounts, { password: 'p', emails: ['a@x.com'] });
+});
+
+test('older APIs without sign-in still work', async () => {
+  const api = new ApiClient('http://api.test', fakeFetch({ '/health': { body: { status: 'ok', extractor: 'rules' } } }));
+  assert.equal((await api.health()).authRequired, false);
+});
+
+test('signed file links are used when the API provides them', () => {
+  const doc = toDocument({ ...apiDoc, file_query: 'expires=1&sig=abc' }, 'http://api.test');
+  assert.equal(doc.file?.url, 'http://api.test/documents/doc_1/file?expires=1&sig=abc');
+});
+
+test('permission errors read clearly', async () => {
+  const noDetail = new ApiClient('http://api.test', fakeFetch({ '/audit/export': { status: 403, body: {} } }));
+  await assert.rejects(noDetail.auditCsv(), /You don't have permission/);
+  const forbidden = new ApiClient('http://api.test', fakeFetch({ '/reminders/send': { status: 403, body: { detail: "You don't have permission to do that." } } }));
+  await assert.rejects(forbidden.sendReminders(), (e: unknown) => e instanceof ApiError && e.status === 403);
+});
+
+test('reminder results are mapped', async () => {
+  const api = new ApiClient(
+    'http://api.test',
+    fakeFetch({ '/reminders/send': { body: { sender: 'console', results: [{ client_id: 'c1', to: 'a@x.com', status: 'skipped', reason: 'recent' }] } } }),
+  );
+  assert.deepEqual(await api.sendReminders(), [{ clientId: 'c1', to: 'a@x.com', status: 'skipped', reason: 'recent' }]);
+});
+
+test('sessions are stored per API address', () => {
+  const store = new Map<string, string>();
+  const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+  saveSession({ url: 'http://a', token: 't1' }, storage);
+  assert.equal(loadSession('http://a', storage), 't1');
+  assert.equal(loadSession('http://b', storage), null);
+  saveSession(null, storage);
+  assert.equal(loadSession('http://a', storage), null);
 });

@@ -34,12 +34,21 @@ Done:
 
 Moved to milestone 4: an accuracy report that runs each extractor over a labelled sample set.
 
-## Milestone 3: Accounts, security and reminders
+## Milestone 3: Accounts, security and reminders (in progress)
 
-- Sign-in for clients and staff, with roles (client, reviewer, admin) and per-client data isolation.
-- File storage in an EU region (S3) with encryption at rest and short-lived download links.
-- Scheduled reminder emails for missing documents.
-- Audit log export.
+Done:
+
+- Sign-in for clients, reviewers and admins: PBKDF2 password hashing, 12-hour bearer sessions stored only as hashes, a failed sign-in limit, and sign-out everywhere on a password reset or when a user is disabled.
+- Per-client data isolation in one access-control layer. Client users only see their own business, and other clients' documents answer "not found".
+- Short-lived signed links for original files.
+- Reminder emails through SMTP, from the dashboard or `python -m app.manage send-reminders` on a schedule, at most once per client per week.
+- Audit log export as CSV, safe to open in spreadsheet apps.
+- Sign-in screen and role-based views in the web app.
+
+Next:
+
+- File storage in EU object storage (S3-compatible) with encryption at rest.
+- User management screens in the web app (the API already supports it).
 
 ## Milestone 4: Production and integrations
 
