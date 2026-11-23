@@ -198,3 +198,39 @@ test('sessions are stored per API address', () => {
   saveSession(null, storage);
   assert.equal(loadSession('http://a', storage), null);
 });
+
+test('admins list, create and disable users', async () => {
+  const calls: Call[] = [];
+  const api = new ApiClient(
+    'http://api.test',
+    fakeFetch(
+      {
+        '/users': { body: [{ id: 'u1', email: 'a@x.com', name: 'A', role: 'admin', client_id: null, created_at: '2026-11-23', disabled: false }] },
+        '/users/u2/disable': { body: {} },
+      },
+      calls,
+    ),
+  ).withToken('t');
+  const users = await api.listUsers();
+  assert.deepEqual(users[0], { id: 'u1', email: 'a@x.com', name: 'A', role: 'admin', clientId: null, createdAt: '2026-11-23', disabled: false });
+  await api.disableUser('u2');
+  assert.equal(calls[1].init.method, 'POST');
+});
+
+test('creating a staff user never sends a client id', async () => {
+  const calls: Call[] = [];
+  const api = new ApiClient('http://api.test', fakeFetch({ '/users': { body: { id: 'u3', email: 'r@x.com', name: 'R', role: 'reviewer' } } }, calls));
+  await api.createUser({ email: 'r@x.com', name: 'R', role: 'reviewer', password: 'Str0ngPassword', clientId: 'cli_1' });
+  assert.equal(JSON.parse(String(calls[0].init.body)).client_id, null);
+});
+
+test('validation errors name the field', async () => {
+  const api = new ApiClient(
+    'http://api.test',
+    fakeFetch({ '/users': { status: 422, body: { detail: [{ loc: ['body', 'password'], msg: 'String should have at least 10 characters' }] } } }),
+  );
+  await assert.rejects(
+    api.createUser({ email: 'r@x.com', name: '', role: 'reviewer', password: 'short', clientId: null }),
+    /Check the password: String should have at least 10 characters/,
+  );
+});

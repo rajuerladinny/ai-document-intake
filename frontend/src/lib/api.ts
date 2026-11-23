@@ -125,6 +125,19 @@ export interface ReminderResult {
   reason?: string;
 }
 
+export interface ManagedUser extends SessionUser {
+  createdAt: string;
+  disabled: boolean;
+}
+
+export interface NewUser {
+  email: string;
+  name: string;
+  role: Role;
+  password: string;
+  clientId: string | null;
+}
+
 export function toUser(raw: Json): SessionUser {
   const role = str(raw.role);
   return {
@@ -167,7 +180,11 @@ export class ApiClient {
       try {
         const body = (await res.json()) as { detail?: unknown };
         if (typeof body.detail === 'string') message = body.detail;
-        else if (Array.isArray(body.detail)) message = 'Some of the details sent were not valid.';
+        else if (Array.isArray(body.detail)) {
+          const first = body.detail[0] as { loc?: unknown[]; msg?: unknown } | undefined;
+          const field = Array.isArray(first?.loc) ? String(first?.loc[first.loc.length - 1] ?? '') : '';
+          message = field ? `Check the ${field.replace(/_/g, ' ')}: ${String(first?.msg ?? 'not valid')}.` : 'Some of the details sent were not valid.';
+        }
       } catch {
         // Not JSON: keep the generic message.
       }
@@ -212,6 +229,26 @@ export class ApiClient {
 
   async me(): Promise<SessionUser> {
     return toUser(await this.request<Json>('/auth/me'));
+  }
+
+  async listUsers(): Promise<ManagedUser[]> {
+    const rows = await this.request<Json[]>('/users');
+    return rows.map((r) => ({ ...toUser(r), createdAt: str(r.created_at), disabled: r.disabled === true }));
+  }
+
+  async createUser(user: NewUser): Promise<SessionUser> {
+    const body = {
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      password: user.password,
+      client_id: user.role === 'client' ? user.clientId : null,
+    };
+    return toUser(await this.request<Json>('/users', this.json('POST', body)));
+  }
+
+  async disableUser(userId: string): Promise<void> {
+    await this.raw(`/users/${encodeURIComponent(userId)}/disable`, { method: 'POST' });
   }
 
   async auditCsv(): Promise<string> {
