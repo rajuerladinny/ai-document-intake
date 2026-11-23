@@ -1,0 +1,16 @@
+Meridian Bank plc
+Business Current Account Statement
+
+Account name: Harbour & Finch Catering Ltd
+Sort code: 30-91-12
+Account number: 70442819
+Statement period: 01/10/2026 to 31/10/2026
+
+Date        Description                       Money out    Money in     Balance
+01/10/2026  Opening balance                                            £12,480.55
+03/10/2026  Card payment - Brightline Statio      £652.20              £11,828.35
+10/10/2026  Faster payment in - Events Co                  £3,200.00   £15,028.35
+21/10/2026  Direct debit - Kestrel Logistics      £534.60              £14,493.75
+31/10/2026  Salaries                            £2,082.16              £12,411.59
+
+Closing balance                                                        £12,411.59

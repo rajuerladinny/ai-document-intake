@@ -1,0 +1,142 @@
+"""Business rules for intake and review, independent of the web framework."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from .extraction import DOC_TYPES, REVIEW_THRESHOLD, Extractor, RuleBasedExtractor
+from .ingest import to_text
+from .store import Store, utc_now
+
+
+class NotFound(LookupError):
+    pass
+
+
+class InvalidAction(ValueError):
+    pass
+
+
+class IntakeService:
+    def __init__(self, store: Store, extractor: Extractor | None = None) -> None:
+        self.store = store
+        self.extractor = extractor or RuleBasedExtractor()
+
+    # Intake ------------------------------------------------------------------
+
+    def ingest(self, client_id: str, file_name: str, data: bytes, actor: str) -> dict[str, Any]:
+        if not self.store.get_client(client_id):
+            raise NotFound(f"Client {client_id} not found")
+        text = to_text(file_name, data)
+        extraction = self.extractor.extract(text).to_dict()
+        status = "needs_review" if extraction["needs_review"] else "ready"
+        doc = self.store.add_document(client_id, file_name, text, status, extraction, self.extractor.name)
+        self.store.log(actor, "uploaded", doc["id"], file_name)
+        self.store.log(
+            "system", "extracted", doc["id"],
+            f"{extraction['doc_type']} at {round(extraction['overall_confidence'] * 100)}% confidence"
+            + (", flagged for review" if status == "needs_review" else ""),
+        )
+        return doc
+
+    # Review ------------------------------------------------------------------
+
+    def get(self, document_id: str) -> dict[str, Any]:
+        doc = self.store.get_document(document_id)
+        if not doc:
+            raise NotFound(f"Document {document_id} not found")
+        return doc
+
+    def correct_field(self, document_id: str, key: str, value: str | None, actor: str) -> dict[str, Any]:
+        doc = self.get(document_id)
+        if doc["status"] in ("approved", "rejected"):
+            raise InvalidAction("This document has already been reviewed.")
+        extraction = doc["extraction"]
+        target = next((f for f in extraction["fields"] if f["key"] == key), None)
+        if target is None:
+            raise NotFound(f"Field {key} not found on this document")
+        cleaned = (value or "").strip() or None
+        before = target["value"]
+        target.setdefault("original_value", before)
+        target["value"] = cleaned
+        target["confidence"] = 1.0 if cleaned is not None else 0.0
+        target["source"] = f"Corrected by {actor}"
+        extraction["low_confidence_fields"] = [
+            f["key"] for f in extraction["fields"] if f["required"] and f["confidence"] < REVIEW_THRESHOLD
+        ]
+        self.store.update_document(document_id, extraction=extraction)
+        self.store.log(actor, "corrected", document_id, f"{target['label']}: {before or 'empty'} → {cleaned or 'empty'}")
+        return self.get(document_id)
+
+    def approve(self, document_id: str, actor: str) -> dict[str, Any]:
+        doc = self.get(document_id)
+        if doc["status"] == "approved":
+            raise InvalidAction("Already approved.")
+        missing = [f["label"] for f in doc["extraction"]["fields"] if f["required"] and f["value"] is None]
+        if doc["extraction"]["doc_type"] == "unknown":
+            raise InvalidAction("Set the document type before approving, or reject it.")
+        if missing:
+            raise InvalidAction(f"Fill in the missing fields first: {', '.join(missing)}.")
+        updated = self.store.update_document(
+            document_id, status="approved", reviewed_by=actor, reviewed_at=utc_now(), reject_reason=None
+        )
+        self.store.log(actor, "approved", document_id)
+        return updated
+
+    def reject(self, document_id: str, reason: str, actor: str) -> dict[str, Any]:
+        doc = self.get(document_id)
+        if doc["status"] == "rejected":
+            raise InvalidAction("Already rejected.")
+        reason = (reason or "").strip()
+        if not reason:
+            raise InvalidAction("Give a reason so the client knows what to resend.")
+        updated = self.store.update_document(
+            document_id, status="rejected", reviewed_by=actor, reviewed_at=utc_now(), reject_reason=reason
+        )
+        self.store.log(actor, "rejected", document_id, reason)
+        return updated
+
+    # Client checklist and reminders -----------------------------------------
+
+    def checklist(self, client_id: str) -> list[dict[str, Any]]:
+        client = self.store.get_client(client_id)
+        if not client:
+            raise NotFound(f"Client {client_id} not found")
+        docs = self.store.list_documents(client_id=client_id)
+        items = []
+        for doc_type in client["required_types"]:
+            of_type = [d for d in docs if d["extraction"]["doc_type"] == doc_type]
+            if any(d["status"] == "approved" for d in of_type):
+                state = "approved"
+            elif any(d["status"] in ("needs_review", "ready") for d in of_type):
+                state = "in_review"
+            elif of_type:
+                state = "rejected"
+            else:
+                state = "missing"
+            items.append({"doc_type": doc_type, "state": state, "documents": [d["id"] for d in of_type]})
+        return items
+
+    def reminder_previews(self) -> list[dict[str, Any]]:
+        """Who would get a 'documents still missing' email today. Sending arrives in milestone 3."""
+        previews = []
+        for client in self.store.list_clients():
+            outstanding = [i["doc_type"] for i in self.checklist(client["id"]) if i["state"] in ("missing", "rejected")]
+            if outstanding:
+                names = ", ".join(t.replace("_", " ") for t in outstanding)
+                previews.append({
+                    "client_id": client["id"],
+                    "to": client["contact_email"],
+                    "subject": "Documents still needed for your bookkeeping",
+                    "body": f"Hi {client['name']}, we are still waiting for: {names}. "
+                            "Please upload them through your client portal.",
+                    "outstanding": outstanding,
+                })
+        return previews
+
+
+def validate_doc_types(types: list[str]) -> list[str]:
+    bad = [t for t in types if t not in DOC_TYPES or t == "unknown"]
+    if bad:
+        raise InvalidAction(f"Unknown document types: {', '.join(bad)}")
+    return types

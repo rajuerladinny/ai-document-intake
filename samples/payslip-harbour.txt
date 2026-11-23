@@ -1,0 +1,22 @@
+HARBOUR & FINCH CATERING LTD
+PAYSLIP
+
+Employee: Daniel Okafor
+Employee No: 00417
+Tax Code: 1257L
+NI Number: QQ 12 34 56 C
+Pay Date: 31/10/2026
+Pay Period: October 2026
+
+Payments                         Amount
+Basic pay                      £2,450.00
+Overtime                         £180.00
+Gross Pay                      £2,630.00
+
+Deductions
+Income Tax                       £316.40
+National Insurance               £126.24
+Pension                          £105.20
+Total Deductions                 £547.84
+
+Net Pay                        £2,082.16
