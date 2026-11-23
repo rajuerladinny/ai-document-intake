@@ -6,6 +6,7 @@ import { ConnectionSettings, extractorLabel } from './components/ConnectionSetti
 import { ReviewPanel } from './components/ReviewPanel';
 import { ReviewQueue } from './components/ReviewQueue';
 import { SignIn } from './components/SignIn';
+import { UsersView } from './components/UsersView';
 import {
   ActionError,
   approve,
@@ -60,6 +61,7 @@ type Route =
   | { view: 'review'; id: string }
   | { view: 'clients' }
   | { view: 'activity' }
+  | { view: 'users' }
   | { view: 'portal'; clientId: string };
 
 function parseHash(hash: string): Route {
@@ -67,6 +69,7 @@ function parseHash(hash: string): Route {
   if (view === 'review' && arg) return { view: 'review', id: arg };
   if (view === 'clients') return { view: 'clients' };
   if (view === 'activity') return { view: 'activity' };
+  if (view === 'users') return { view: 'users' };
   if (view === 'portal') return { view: 'portal', clientId: arg || DEMO_CLIENTS[0].id };
   return { view: 'queue' };
 }
@@ -130,6 +133,7 @@ export function App() {
   const needsSignIn = apiMode && health?.authRequired === true && !user;
   const isClientUser = apiMode && user?.role === 'client';
   const isAdmin = !apiMode || !health?.authRequired || user?.role === 'admin';
+  const canManageUsers = apiMode && health?.authRequired === true && user?.role === 'admin';
 
   /** Forget the session (expired, or signed out) and show the sign-in screen. */
   const dropSession = useCallback(
@@ -447,6 +451,11 @@ export function App() {
           <a href="#/activity" className={route.view === 'activity' ? 'is-active' : ''}>
             Activity history
           </a>
+          {canManageUsers && (
+            <a href="#/users" className={route.view === 'users' ? 'is-active' : ''}>
+              Users
+            </a>
+          )}
         </nav>
       )}
 
@@ -487,6 +496,19 @@ export function App() {
             onOpen={(id) => go({ view: 'review', id })}
             onExport={apiMode && isAdmin ? () => void exportAudit() : undefined}
           />
+        )}
+
+        {route.view === 'users' && canManageUsers && api.client && user && (
+          <UsersView
+            api={api.client}
+            clients={state.clients}
+            currentUserId={user.id}
+            onChanged={() => void refresh()}
+            onError={handleApiError}
+          />
+        )}
+        {route.view === 'users' && !canManageUsers && !loading && !needsSignIn && (
+          <p className="empty">Only admins can manage users.</p>
         )}
 
         {route.view === 'portal' && !loading && state.clients.length > 0 && (

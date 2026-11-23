@@ -55,7 +55,8 @@ CREATE INDEX IF NOT EXISTS idx_activity_document ON activity(document_id);
 CREATE TABLE IF NOT EXISTS files (
     document_id TEXT PRIMARY KEY REFERENCES documents(id),
     media_type TEXT NOT NULL,
-    data BLOB NOT NULL
+    data BLOB NOT NULL,                     -- empty when the file lives in external storage
+    storage_key TEXT                        -- key in the local folder or S3 bucket, if any
 );
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -115,12 +116,18 @@ class Store:
             self._order = "seq"
             for statement in _statements(PG_SCHEMA):
                 self._db.execute(statement)
+            self._db.execute("ALTER TABLE files ADD COLUMN IF NOT EXISTS storage_key TEXT")
         else:
             self._db = sqlite3.connect(target, check_same_thread=False)
             self._db.row_factory = sqlite3.Row
             self._db.execute("PRAGMA foreign_keys = ON")
             self._db.executescript(SCHEMA)
             self._order = "rowid"
+            # Databases created before external storage existed lack this column.
+            columns = {r[1] for r in self._db.execute("PRAGMA table_info(files)")}
+            if "storage_key" not in columns:
+                self._db.execute("ALTER TABLE files ADD COLUMN storage_key TEXT")
+                self._db.commit()
 
     def close(self) -> None:
         self._db.close()
@@ -193,16 +200,24 @@ class Store:
         " LEFT JOIN files f ON f.document_id = d.id"
     )
 
-    def save_file(self, document_id: str, media_type: str, data: bytes) -> None:
+    def save_file(self, document_id: str, media_type: str, data: bytes, storage_key: str | None = None) -> None:
         self._write(
-            "INSERT INTO files (document_id, media_type, data) VALUES (?, ?, ?)"
-            " ON CONFLICT (document_id) DO UPDATE SET media_type = excluded.media_type, data = excluded.data",
-            (document_id, media_type, data),
+            "INSERT INTO files (document_id, media_type, data, storage_key) VALUES (?, ?, ?, ?)"
+            " ON CONFLICT (document_id) DO UPDATE SET media_type = excluded.media_type, data = excluded.data,"
+            " storage_key = excluded.storage_key",
+            (document_id, media_type, data, storage_key),
         )
 
     def get_file(self, document_id: str) -> tuple[str, bytes] | None:
-        row = self._one("SELECT media_type, data FROM files WHERE document_id = ?", (document_id,))
-        return (row["media_type"], bytes(row["data"])) if row else None
+        found = self.get_file_record(document_id)
+        return (found[0], found[1]) if found else None
+
+    def get_file_record(self, document_id: str) -> tuple[str, bytes, str | None] | None:
+        """(media type, bytes stored in the database, external storage key or None)."""
+        row = self._one("SELECT media_type, data, storage_key FROM files WHERE document_id = ?", (document_id,))
+        if not row:
+            return None
+        return row["media_type"], bytes(row["data"] or b""), row["storage_key"] or None
 
     def get_document(self, document_id: str) -> dict[str, Any] | None:
         row = self._one(self._DOC_SELECT + " WHERE d.id = ?", (document_id,))

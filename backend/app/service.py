@@ -7,7 +7,8 @@ from typing import Any
 from .extraction import DOC_TYPES, REVIEW_THRESHOLD, ExtractedField, Extractor, RuleBasedExtractor, run_checks
 from .ingest import UnsupportedFile, read_upload
 from .llm import LLMError
-from .store import Store, utc_now
+from .storage import DatabaseStorage, FileStorage, StorageError
+from .store import Store, new_id, utc_now
 
 
 class NotFound(LookupError):
@@ -22,10 +23,15 @@ class ExtractionUnavailable(RuntimeError):
     """The AI extractor was needed (photo or scan) but could not be reached."""
 
 
+class StorageUnavailable(RuntimeError):
+    """The file store (local folder or S3) refused or could not be reached."""
+
+
 class IntakeService:
-    def __init__(self, store: Store, extractor: Extractor | None = None) -> None:
+    def __init__(self, store: Store, extractor: Extractor | None = None, storage: FileStorage | None = None) -> None:
         self.store = store
         self.extractor = extractor or RuleBasedExtractor()
+        self.storage = storage or DatabaseStorage()
 
     # Intake ------------------------------------------------------------------
 
@@ -48,8 +54,20 @@ class IntakeService:
                 )
             text, extraction, used = upload.text, self.extractor.extract(upload.text).to_dict(), self.extractor.name
         status = "needs_review" if extraction["needs_review"] else "ready"
+        media_type = upload.media_type or "application/octet-stream"
+        key = None
+        if not isinstance(self.storage, DatabaseStorage):
+            # Save the original first, so a storage failure leaves no half-created document.
+            key = f"{client_id}/{new_id('file')}"
+            try:
+                self.storage.put(key, data, media_type)
+            except StorageError as exc:
+                raise StorageUnavailable("The file could not be saved to storage. Please try again.") from exc
         doc = self.store.add_document(client_id, file_name, text, status, extraction, used)
-        self.store.save_file(doc["id"], upload.media_type or "application/octet-stream", data)
+        if key is None:
+            self.store.save_file(doc["id"], media_type, data)
+        else:
+            self.store.save_file(doc["id"], media_type, b"", storage_key=key)
         doc = self.get(doc["id"])
         self.store.log(actor, "uploaded", doc["id"], file_name)
         self.store.log(
@@ -60,11 +78,19 @@ class IntakeService:
         return doc
 
     def original_file(self, document_id: str) -> tuple[str, bytes]:
-        found = self.store.get_file(document_id)
+        found = self.store.get_file_record(document_id)
         if found is None:
             self.get(document_id)  # 404 for unknown documents
             raise NotFound("The original file is not stored for this document")
-        return found
+        media_type, data, key = found
+        if key is None:
+            return media_type, data
+        if isinstance(self.storage, DatabaseStorage):
+            raise StorageUnavailable("This file is in external storage, but FILE_STORAGE is set to database.")
+        try:
+            return media_type, self.storage.get(key)
+        except StorageError as exc:
+            raise StorageUnavailable(str(exc)) from exc
 
     # Review ------------------------------------------------------------------
 
