@@ -38,7 +38,8 @@ class Rejection(BaseModel):
 
 
 def create_app(db_path: str | None = None, seed: bool | None = None, extractor: Any = None) -> FastAPI:
-    store = Store(db_path or os.getenv("DATABASE_PATH", ":memory:"))
+    # DATABASE_URL may be a PostgreSQL URL or a SQLite path; DATABASE_PATH is the older name.
+    store = Store(db_path or os.getenv("DATABASE_URL") or os.getenv("DATABASE_PATH", ":memory:"))
     # Fails fast at startup if EXTRACTOR=llm is set without a model or key.
     service = IntakeService(store, extractor or build_extractor_from_env())
     should_seed = seed if seed is not None else os.getenv("SEED_DEMO", "1") == "1"
@@ -76,7 +77,7 @@ def create_app(db_path: str | None = None, seed: bool | None = None, extractor: 
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "extractor": service.extractor.name}
+        return {"status": "ok", "extractor": service.extractor.name, "database": store.backend}
 
     @app.get("/clients")
     def list_clients() -> list[dict[str, Any]]:

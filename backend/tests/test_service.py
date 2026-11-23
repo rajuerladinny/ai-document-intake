@@ -3,13 +3,13 @@ import pytest
 from app.ingest import UnsupportedFile, to_text
 from app.seed import seed_demo
 from app.service import IntakeService, InvalidAction, NotFound, validate_doc_types
-from app.store import Store
-from conftest import SAMPLES_DIR
+
+from conftest import SAMPLES_DIR, make_store
 
 
 @pytest.fixture
 def service():
-    svc = IntakeService(Store(":memory:"))
+    svc = IntakeService(make_store())
     svc.store.add_client("Acme Ltd", "acme@example.com", ["invoice", "receipt"], client_id="cli_acme")
     yield svc
     svc.store.close()
@@ -114,7 +114,7 @@ def test_validate_doc_types():
 
 
 def test_seed_demo_loads_two_clients_once():
-    svc = IntakeService(Store(":memory:"))
+    svc = IntakeService(make_store())
     seed_demo(svc)
     seed_demo(svc)
     assert len(svc.store.list_clients()) == 2
