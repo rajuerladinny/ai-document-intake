@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .extraction import DOC_TYPES, REVIEW_THRESHOLD, Extractor, RuleBasedExtractor
-from .ingest import to_text
+from .extraction import DOC_TYPES, REVIEW_THRESHOLD, ExtractedField, Extractor, RuleBasedExtractor, run_checks
+from .ingest import UnsupportedFile, read_upload
+from .llm import LLMError
 from .store import Store, utc_now
 
 
@@ -15,6 +16,10 @@ class NotFound(LookupError):
 
 class InvalidAction(ValueError):
     pass
+
+
+class ExtractionUnavailable(RuntimeError):
+    """The AI extractor was needed (photo or scan) but could not be reached."""
 
 
 class IntakeService:
@@ -27,10 +32,23 @@ class IntakeService:
     def ingest(self, client_id: str, file_name: str, data: bytes, actor: str) -> dict[str, Any]:
         if not self.store.get_client(client_id):
             raise NotFound(f"Client {client_id} not found")
-        text = to_text(file_name, data)
-        extraction = self.extractor.extract(text).to_dict()
+        upload = read_upload(file_name, data)
+        extract_document = getattr(self.extractor, "extract_document", None)
+        if extract_document is not None:
+            try:
+                result = extract_document(upload)
+            except LLMError as exc:  # only raised for photos and scans; text falls back to rules
+                raise ExtractionUnavailable(f"The AI extractor could not read this file: {exc}") from exc
+            text, extraction, used = result.text, result.extraction.to_dict(), result.extractor
+        else:
+            if upload.text is None:
+                raise UnsupportedFile(
+                    "Photos and scanned PDFs need the AI extractor (set EXTRACTOR=llm). "
+                    "Upload a text-based PDF or .txt instead."
+                )
+            text, extraction, used = upload.text, self.extractor.extract(upload.text).to_dict(), self.extractor.name
         status = "needs_review" if extraction["needs_review"] else "ready"
-        doc = self.store.add_document(client_id, file_name, text, status, extraction, self.extractor.name)
+        doc = self.store.add_document(client_id, file_name, text, status, extraction, used)
         self.store.log(actor, "uploaded", doc["id"], file_name)
         self.store.log(
             "system", "extracted", doc["id"],
@@ -64,6 +82,12 @@ class IntakeService:
         extraction["low_confidence_fields"] = [
             f["key"] for f in extraction["fields"] if f["required"] and f["confidence"] < REVIEW_THRESHOLD
         ]
+        # Re-run the arithmetic checks so a corrected VAT figure clears (or raises) the warning.
+        fields = [
+            ExtractedField(f["key"], f["label"], f["value"], f["confidence"], f["source"], f["required"])
+            for f in extraction["fields"]
+        ]
+        extraction["checks"] = [c.__dict__ for c in run_checks(extraction["doc_type"], fields, doc["text"])]
         self.store.update_document(document_id, extraction=extraction)
         self.store.log(actor, "corrected", document_id, f"{target['label']}: {before or 'empty'} → {cleaned or 'empty'}")
         return self.get(document_id)

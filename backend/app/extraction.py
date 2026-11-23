@@ -25,6 +25,52 @@ WEAK = 0.55
 
 DOC_TYPES = ("invoice", "receipt", "payslip", "bank_statement", "unknown")
 
+# (key, label, required, kind) per document type. Every extractor must return
+# exactly these fields, so the review screen and the checks work the same way
+# whichever extractor produced them. kind is one of: text, date, amount, currency.
+FIELD_SPECS: dict[str, list[tuple[str, str, bool, str]]] = {
+    "invoice": [
+        ("supplier", "Supplier", True, "text"),
+        ("invoice_number", "Invoice number", True, "text"),
+        ("invoice_date", "Invoice date", True, "date"),
+        ("due_date", "Due date", True, "date"),
+        ("net_amount", "Net amount", True, "amount"),
+        ("vat_amount", "VAT", True, "amount"),
+        ("total", "Total", True, "amount"),
+        ("currency", "Currency", False, "currency"),
+    ],
+    "receipt": [
+        ("merchant", "Merchant", True, "text"),
+        ("date", "Date", True, "date"),
+        ("total", "Total", True, "amount"),
+        ("payment_method", "Payment method", False, "text"),
+        ("vat_amount", "VAT", False, "amount"),
+        ("currency", "Currency", False, "currency"),
+    ],
+    "payslip": [
+        ("employer", "Employer", True, "text"),
+        ("employee", "Employee", True, "text"),
+        ("pay_date", "Pay date", True, "date"),
+        ("pay_period", "Pay period", False, "text"),
+        ("tax_code", "Tax code", False, "text"),
+        ("gross_pay", "Gross pay", True, "amount"),
+        ("total_deductions", "Total deductions", True, "amount"),
+        ("net_pay", "Net pay", True, "amount"),
+        ("currency", "Currency", False, "currency"),
+    ],
+    "bank_statement": [
+        ("bank", "Bank", True, "text"),
+        ("account_holder", "Account holder", True, "text"),
+        ("sort_code", "Sort code", False, "text"),
+        ("account_number", "Account number", False, "account"),
+        ("period_start", "Period start", True, "date"),
+        ("period_end", "Period end", True, "date"),
+        ("opening_balance", "Opening balance", True, "amount"),
+        ("closing_balance", "Closing balance", True, "amount"),
+        ("currency", "Currency", False, "currency"),
+    ],
+}
+
 _I = re.IGNORECASE
 
 KEYWORDS: dict[str, list[tuple[re.Pattern[str], int]]] = {
@@ -217,7 +263,7 @@ def _num(f: ExtractedField) -> float | None:
         return None
 
 
-def _extract_invoice(lines: list[str], text: str) -> tuple[list[ExtractedField], list[ValidationCheck]]:
+def _extract_invoice(lines: list[str], text: str) -> list[ExtractedField]:
     number = _label_value(lines, r"\binvoice\s*(?:no|number|#)\.?\s*:?\s*([A-Z0-9][A-Z0-9/-]*)")
     invoice_date = _date_field(lines, "invoice_date", "Invoice date", r"\b(invoice\s+date|^date)\b")
     due_date = _date_field(lines, "due_date", "Due date", r"\bdue\s+date\b")
@@ -239,32 +285,14 @@ def _extract_invoice(lines: list[str], text: str) -> tuple[list[ExtractedField],
         _amount_field(lines, "total", "Total", r"\b(total\s+due|amount\s+due|^total)\b"),
         _currency_field(text),
     ]
-    net, vat, total = _num(fields[4]), _num(fields[5]), _num(fields[6])
-    checks: list[ValidationCheck] = []
-    if net is not None and vat is not None and total is not None:
-        checks.append(ValidationCheck(
-            "sum", "Net + VAT = total", abs(net + vat - total) < 0.01,
-            f"{net:.2f} + {vat:.2f} = {round2(net + vat):.2f} (document says {total:.2f})",
-        ))
-    rate_line = _find_line(lines, re.compile(r"^vat\b.*?(\d{1,2}(?:\.\d+)?)\s*%", _I))
-    rate_match = re.search(r"(\d{1,2}(?:\.\d+)?)\s*%", rate_line) if rate_line else None
-    if rate_match and net is not None and vat is not None:
-        rate = float(rate_match.group(1))
-        expected = round2(net * rate / 100)
-        rate_label = f"{rate:g}"
-        checks.append(ValidationCheck(
-            "vat_rate", f"VAT is {rate_label}% of net", abs(expected - vat) <= 0.02,
-            f"Expected {expected:.2f}, document says {vat:.2f}",
-        ))
-    return fields, checks
+    return fields
 
 
 _CARD_RE = re.compile(r"\b(card|visa|mastercard|amex|contactless)\b", _I)
 _CASH_RE = re.compile(r"\bcash\b", _I)
 
 
-def _extract_receipt(lines: list[str], text: str) -> tuple[list[ExtractedField], list[ValidationCheck]]:
-    total_idx = next((i for i, line in enumerate(lines) if re.match(r"total\b", line, _I)), -1)
+def _extract_receipt(lines: list[str], text: str) -> list[ExtractedField]:
     if _CARD_RE.search(text):
         payment, payment_line = "Card", _find_line(lines, _CARD_RE)
     elif _CASH_RE.search(text):
@@ -279,26 +307,10 @@ def _extract_receipt(lines: list[str], text: str) -> tuple[list[ExtractedField],
         _amount_field(lines, "vat_amount", "VAT", r"\bvat\b", required=False),
         _currency_field(text),
     ]
-    checks: list[ValidationCheck] = []
-    total = _num(fields[2])
-    if total_idx > 0 and total is not None:
-        items = []
-        for line in lines[:total_idx]:
-            if re.search(r"\b(vat|tel|subtotal)\b", line, _I):
-                continue
-            found = money_on_line(line)
-            if found:
-                items.append(found[-1][0])
-        if items:
-            s = round2(sum(items))
-            checks.append(ValidationCheck(
-                "items_sum", "Line items add up to total", abs(s - total) < 0.01,
-                f"Items {s:.2f}, total {total:.2f}",
-            ))
-    return fields, checks
+    return fields
 
 
-def _extract_payslip(lines: list[str], text: str) -> tuple[list[ExtractedField], list[ValidationCheck]]:
+def _extract_payslip(lines: list[str], text: str) -> list[ExtractedField]:
     employee = _label_value(lines, r"^employee(?:\s+name)?\s*:\s*(.+)$")
     period = _label_value(lines, r"^pay\s+period\s*:\s*(.+)$")
     tax_code = _label_value(lines, r"\btax\s+code\s*:?\s*([0-9]{2,4}[A-Z]{1,2})\b")
@@ -316,17 +328,10 @@ def _extract_payslip(lines: list[str], text: str) -> tuple[list[ExtractedField],
         _amount_field(lines, "net_pay", "Net pay", r"\bnet\s+pay\b"),
         _currency_field(text),
     ]
-    gross, deductions, net = _num(fields[5]), _num(fields[6]), _num(fields[7])
-    checks: list[ValidationCheck] = []
-    if gross is not None and deductions is not None and net is not None:
-        checks.append(ValidationCheck(
-            "net_pay", "Gross − deductions = net pay", abs(gross - deductions - net) < 0.01,
-            f"{gross:.2f} − {deductions:.2f} = {round2(gross - deductions):.2f} (document says {net:.2f})",
-        ))
-    return fields, checks
+    return fields
 
 
-def _extract_bank_statement(lines: list[str], text: str) -> tuple[list[ExtractedField], list[ValidationCheck]]:
+def _extract_bank_statement(lines: list[str], text: str) -> list[ExtractedField]:
     holder = _label_value(lines, r"^account\s+name\s*:\s*(.+)$")
     sort_code = _label_value(lines, r"\bsort\s+code\s*:?\s*(\d{2}-\d{2}-\d{2})\b")
     account = _label_value(lines, r"\baccount\s+number\s*:?\s*(\d{6,10})\b")
@@ -349,31 +354,120 @@ def _extract_bank_statement(lines: list[str], text: str) -> tuple[list[Extracted
         _amount_field(lines, "closing_balance", "Closing balance", r"\bclosing\s+balance\b"),
         _currency_field(text),
     ]
+    return fields
+
+
+def _values(fields: list[ExtractedField]) -> dict[str, float | None]:
+    return {f.key: _num(f) for f in fields}
+
+
+def _invoice_checks(v: dict[str, float | None], lines: list[str]) -> list[ValidationCheck]:
+    net, vat, total = v.get("net_amount"), v.get("vat_amount"), v.get("total")
     checks: list[ValidationCheck] = []
-    opening, closing = _num(fields[6]), _num(fields[7])
+    if net is not None and vat is not None and total is not None:
+        checks.append(ValidationCheck(
+            "sum", "Net + VAT = total", abs(net + vat - total) < 0.01,
+            f"{net:.2f} + {vat:.2f} = {round2(net + vat):.2f} (document says {total:.2f})",
+        ))
+    rate_line = _find_line(lines, re.compile(r"^vat\b.*?(\d{1,2}(?:\.\d+)?)\s*%", _I))
+    rate_match = re.search(r"(\d{1,2}(?:\.\d+)?)\s*%", rate_line) if rate_line else None
+    if rate_match and net is not None and vat is not None:
+        rate = float(rate_match.group(1))
+        expected = round2(net * rate / 100)
+        checks.append(ValidationCheck(
+            "vat_rate", f"VAT is {rate:g}% of net", abs(expected - vat) <= 0.02,
+            f"Expected {expected:.2f}, document says {vat:.2f}",
+        ))
+    return checks
+
+
+def _receipt_checks(v: dict[str, float | None], lines: list[str]) -> list[ValidationCheck]:
+    total = v.get("total")
+    total_idx = next((i for i, line in enumerate(lines) if re.match(r"total\b", line, _I)), -1)
+    if total_idx <= 0 or total is None:
+        return []
+    items = []
+    for line in lines[:total_idx]:
+        if re.search(r"\b(vat|tel|subtotal)\b", line, _I):
+            continue
+        found = money_on_line(line)
+        if found:
+            items.append(found[-1][0])
+    if not items:
+        return []
+    s = round2(sum(items))
+    return [ValidationCheck("items_sum", "Line items add up to total", abs(s - total) < 0.01,
+                            f"Items {s:.2f}, total {total:.2f}")]
+
+
+def _payslip_checks(v: dict[str, float | None], lines: list[str]) -> list[ValidationCheck]:
+    gross, deductions, net = v.get("gross_pay"), v.get("total_deductions"), v.get("net_pay")
+    if gross is None or deductions is None or net is None:
+        return []
+    return [ValidationCheck(
+        "net_pay", "Gross − deductions = net pay", abs(gross - deductions - net) < 0.01,
+        f"{gross:.2f} − {deductions:.2f} = {round2(gross - deductions):.2f} (document says {net:.2f})",
+    )]
+
+
+def _bank_checks(v: dict[str, float | None], lines: list[str]) -> list[ValidationCheck]:
+    opening, closing = v.get("opening_balance"), v.get("closing_balance")
     tx_lines = [
         line for line in lines
         if re.match(r"\d{1,2}/\d{1,2}/\d{4}\s", line) and not re.search(r"opening\s+balance", line, _I)
     ]
-    if opening is not None and closing is not None and tx_lines:
-        balance, reconciled = opening, True
-        for line in tx_lines:
-            amounts = [a for a, _ in money_on_line(line)]
-            if len(amounts) < 2:
-                reconciled = False
-                break
-            change, nxt = amounts[-2], amounts[-1]
-            if abs(balance - change - nxt) < 0.01 or abs(balance + change - nxt) < 0.01:
-                balance = nxt
-            else:
-                reconciled = False
-                break
-        ok = reconciled and abs(balance - closing) < 0.01
-        checks.append(ValidationCheck(
-            "reconcile", "Running balances reconcile to closing balance", ok,
-            f"{len(tx_lines)} transactions, ends at {balance:.2f}, closing {closing:.2f}",
-        ))
-    return fields, checks
+    if opening is None or closing is None or not tx_lines:
+        return []
+    balance, reconciled = opening, True
+    for line in tx_lines:
+        amounts = [a for a, _ in money_on_line(line)]
+        if len(amounts) < 2:
+            reconciled = False
+            break
+        change, nxt = amounts[-2], amounts[-1]
+        if abs(balance - change - nxt) < 0.01 or abs(balance + change - nxt) < 0.01:
+            balance = nxt
+        else:
+            reconciled = False
+            break
+    ok = reconciled and abs(balance - closing) < 0.01
+    return [ValidationCheck(
+        "reconcile", "Running balances reconcile to closing balance", ok,
+        f"{len(tx_lines)} transactions, ends at {balance:.2f}, closing {closing:.2f}",
+    )]
+
+
+_CHECKS = {
+    "invoice": _invoice_checks,
+    "receipt": _receipt_checks,
+    "payslip": _payslip_checks,
+    "bank_statement": _bank_checks,
+}
+
+
+def run_checks(doc_type: str, fields: list[ExtractedField], text: str) -> list[ValidationCheck]:
+    """Arithmetic checks on extracted values. Works for any extractor's output (rules or LLM)."""
+    rule = _CHECKS.get(doc_type)
+    return rule(_values(fields), _lines(text)) if rule else []
+
+
+def summarise(doc_type: str, type_confidence: float, fields: list[ExtractedField], text: str) -> Extraction:
+    """Run checks and work out overall confidence and whether a person must look closely."""
+    checks = run_checks(doc_type, fields, text)
+    required = [f for f in fields if f.required]
+    avg = sum(f.confidence for f in required) / len(required) if required else 0.0
+    low = [f.key for f in required if f.confidence < REVIEW_THRESHOLD]
+    failed = any(not c.passed for c in checks)
+    overall = round2(min(type_confidence, avg) * (0.8 if failed else 1.0))
+    return Extraction(
+        doc_type=doc_type,
+        type_confidence=type_confidence,
+        fields=fields,
+        checks=checks,
+        overall_confidence=overall,
+        needs_review=doc_type == "unknown" or type_confidence < 0.7 or bool(low) or failed,
+        low_confidence_fields=low,
+    )
 
 
 _EXTRACTORS = {
@@ -387,22 +481,8 @@ _EXTRACTORS = {
 def extract(text: str) -> Extraction:
     lines = _lines(text)
     doc_type, confidence = classify(text)
-    fields, checks = _EXTRACTORS[doc_type](lines, text) if doc_type in _EXTRACTORS else ([], [])
-
-    required = [f for f in fields if f.required]
-    avg = sum(f.confidence for f in required) / len(required) if required else 0.0
-    low = [f.key for f in required if f.confidence < REVIEW_THRESHOLD]
-    failed = any(not c.passed for c in checks)
-    overall = round2(min(confidence, avg) * (0.8 if failed else 1.0))
-    return Extraction(
-        doc_type=doc_type,
-        type_confidence=confidence,
-        fields=fields,
-        checks=checks,
-        overall_confidence=overall,
-        needs_review=doc_type == "unknown" or confidence < 0.7 or bool(low) or failed,
-        low_confidence_fields=low,
-    )
+    fields = _EXTRACTORS[doc_type](lines, text) if doc_type in _EXTRACTORS else []
+    return summarise(doc_type, confidence, fields, text)
 
 
 class RuleBasedExtractor:

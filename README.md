@@ -31,6 +31,7 @@ This project takes a human-in-the-loop approach:
 | **Client portal** | A checklist of documents still needed this month, upload, and the status of each document. |
 | **Reminders** | Preview of the reminder email for every client with missing documents. |
 | **Activity history** | Every upload, extraction, correction, approval and rejection, with time and person. |
+| **AI extraction (API)** | Optional OpenAI or Claude extractor, including photos and scanned PDFs. Every AI value must quote the document line it came from, or it is flagged. The same arithmetic checks run on the AI output, and **hybrid** mode cross-checks the AI against the rules. |
 | **Privacy by default** | Extracted data keeps only the last 4 digits of bank account numbers, and account and National Insurance numbers are masked in the document viewer. |
 
 <table>
@@ -48,7 +49,7 @@ This project takes a human-in-the-loop approach:
 
 ```mermaid
 flowchart LR
-    A[Client uploads<br/>document] --> B[Read text<br/>.txt / PDF]
+    A[Client uploads<br/>document] --> B[Read text<br/>.txt / PDF / photo]
     B --> C[Classify<br/>document type]
     C --> D[Extract fields<br/>+ confidence + source line]
     D --> E[Validation checks]
@@ -108,7 +109,26 @@ uvicorn app.main:app --reload     # http://localhost:8000/docs
 pytest
 ```
 
-The API starts with the demo clients and sample documents loaded. Set `SEED_DEMO=0` to start empty, `DATABASE_PATH=intake.db` to keep data between restarts, and `CORS_ORIGINS` to allow your frontend's URL.
+The API starts with the demo clients and sample documents loaded (always read with the free rules extractor). Set `SEED_DEMO=0` to start empty, `DATABASE_PATH=intake.db` to keep data between restarts, and `CORS_ORIGINS` to allow your frontend's URL.
+
+### Choosing the extractor
+
+The API reads documents with one of three extractors, set by environment variables (see [`backend/.env.example`](backend/.env.example)):
+
+| `EXTRACTOR` | What it does | Reads photos and scans |
+|---|---|---|
+| `rules` (default) | Rule-based extraction. Free, offline, the same logic as the browser demo. | No |
+| `llm` | OpenAI or Claude (`LLM_PROVIDER`, `LLM_MODEL`, API key) with a strict JSON schema. | Yes |
+| `hybrid` | Runs both on text documents. Agreement raises confidence; disagreement caps it at 60% and shows the reviewer both readings. | Yes |
+
+The AI is never trusted on its own word:
+
+1. **Evidence required.** Each value comes with a quote from the document. If the quote is not actually in the document, confidence is capped at 50% and the field goes to review.
+2. **Same checks.** Net + VAT = total and the other checks are recalculated on the AI's numbers, so a misread figure is still caught.
+3. **Normalised output.** Amounts, dates, currencies and masked account numbers come out in the same format whichever extractor ran.
+4. **Graceful failure.** If the AI API is down, text documents fall back to the rules extractor (marked "AI unavailable"); photos return `503` so the client can retry.
+
+For photos and scans, the model also returns a transcript. Fields are checked against that transcript, which is stored as the document text so the reviewer can see exactly what the model read.
 
 ### API
 
@@ -118,7 +138,7 @@ The API starts with the demo clients and sample documents loaded. Set `SEED_DEMO
 | `GET` / `POST` | `/clients` | List or create clients and the document types they must send |
 | `GET` | `/clients/{id}/checklist` | Approved / in review / missing, per required document type |
 | `GET` | `/documents?client_id=&status=` | List documents |
-| `POST` | `/documents` | Upload a `.txt` or text-based `.pdf` (multipart: `client_id`, `file`) |
+| `POST` | `/documents` | Upload `.txt`, `.pdf`, or (with the AI extractor) `.jpg` / `.png` / `.webp` / scanned PDF (multipart: `client_id`, `file`) |
 | `GET` | `/documents/{id}` | Document with extracted fields, confidence and checks |
 | `PATCH` | `/documents/{id}/fields/{key}` | Correct a field (`{"value": "..."}`) |
 | `POST` | `/documents/{id}/approve` | Approve (409 if required fields are missing) |
@@ -133,7 +153,7 @@ The `X-User` header records who made each change. Real sign-in arrives in milest
 | Milestone | Scope | Status |
 |---|---|---|
 | 1. Intake and review workflow | Extraction with confidence and checks, review dashboard, client portal, reminders preview, activity history, API, tests, live demo | ✅ Done |
-| 2. Real AI extraction | LLM extractor with schema-validated JSON, OCR for photos and scans, PDF upload in the UI, PostgreSQL | Next |
+| 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans ✅ · PDF upload in the UI and PostgreSQL next | In progress |
 | 3. Accounts and security | Sign-in and roles, per-client data isolation, EU file storage, scheduled reminder emails | Planned |
 | 4. Production | Docker, deploy, monitoring, accuracy dashboard, export to CSV / Xero / QuickBooks | Planned |
 
@@ -141,8 +161,9 @@ Details are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Current limitations
 
-- Extraction is rule-based and tuned to UK-style documents in English. Unusual layouts get a low confidence score and go to review; they are not silently accepted.
-- The browser demo reads text files and the built-in samples. The API also reads text-based PDFs; scans and photos need OCR (milestone 2).
+- The rules extractor is tuned to UK-style documents in English. Unusual layouts get a low confidence score and go to review; they are not silently accepted. The AI extractor handles other layouts but costs per document.
+- The browser demo runs the rules extractor on text files and the built-in samples. PDFs, photos and the AI extractor are available through the API; the web app's API mode is next.
+- With the AI extractor, document content is sent to the provider you choose. Check their data-retention terms (and use an EU endpoint if needed) before using real client data.
 - There is no authentication yet, so do not use it with real client data until milestone 3.
 
 ## License
