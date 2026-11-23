@@ -32,7 +32,7 @@ This project takes a human-in-the-loop approach:
 | **Reminders** | Reminder emails to every client with missing documents, sent from the dashboard or on a schedule, at most once a week per client. |
 | **Activity history** | Every upload, extraction, correction, approval and rejection, with time and person. |
 | **AI extraction (API)** | Optional OpenAI or Claude extractor, including photos and scanned PDFs. Every AI value must quote the document line it came from, or it is flagged. The same arithmetic checks run on the AI output, and **hybrid** mode cross-checks the AI against the rules. |
-| **Accounts and roles (API)** | Sign-in for admins, reviewers and clients. Clients only ever see their own business; other clients' documents answer "not found". Original files use short-lived signed links. |
+| **Accounts and roles (API)** | Sign-in for admins, reviewers and clients. Clients only ever see their own business; other clients' documents answer "not found". Original files use short-lived signed links. Admins add and disable users from a Users screen. |
 | **Audit export (API)** | Download the full activity log as CSV for compliance, safe to open in Excel. |
 | **Privacy by default** | Extracted data keeps only the last 4 digits of bank account numbers, and account and National Insurance numbers are masked in the document viewer. |
 
@@ -86,6 +86,8 @@ The extractor sits behind a small interface (`Extractor` in `backend/app/extract
   </tr>
 </table>
 
+<p align="center"><img src="docs/screenshots/users.png" alt="Admin Users screen: add a user with a role, disable access" width="80%" /><br /><sub>Admins add clients, reviewers and admins, and can disable access</sub></p>
+
 ## Tech stack
 
 - **Frontend:** React 19, TypeScript (strict), esbuild, hand-written CSS (no UI framework), fully responsive.
@@ -110,6 +112,7 @@ ai-document-intake/
 │   ├── app/auth.py           Passwords, sessions, signed file links
 │   ├── app/access.py         Who may do what (roles, per-client isolation)
 │   ├── app/notify.py         Reminder emails (SMTP) and audit CSV
+│   ├── app/storage.py        File storage: database, local folder or S3 (EU)
 │   ├── app/manage.py         Admin commands: create-user, send-reminders
 │   ├── app/main.py           FastAPI routes
 │   └── tests/
@@ -195,6 +198,21 @@ python -m app.manage create-user --email you@yourfirm.com --name "Your Name" --r
 
 With `SEED_DEMO=1`, demo accounts for each role are created and shown on the sign-in screen (password `DemoPass2026`, or `DEMO_PASSWORD`). **Never use `SEED_DEMO=1` on a server with real data.** Set `SECRET_KEY` so file links survive restarts. `AUTH_REQUIRED=0` turns sign-in off for local demos only.
 
+### Where original files are stored
+
+`FILE_STORAGE` picks it:
+
+| Value | Where | Settings |
+|---|---|---|
+| `database` (default) | In the database, next to the extracted data | none |
+| `local` | A folder on the server | `FILE_STORAGE_DIR` |
+| `s3` | Any S3-compatible bucket: AWS S3 in an EU region (`eu-west-2` London, `eu-central-1` Frankfurt), Cloudflare R2, Hetzner, Scaleway, MinIO | `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, optional `S3_ENDPOINT`, `S3_PREFIX` |
+
+- S3 objects are written with server-side encryption (AES-256). The bucket should block all public access, because files reach users only through the API's signed links.
+- The S3 client signs requests itself (AWS Signature Version 4, checked against AWS's published test signatures), so no SDK is needed.
+- Files already stored in the database keep working after you switch.
+- The file is saved before the document is created, so a storage outage never leaves a half-saved document.
+
 ### Reminder emails
 
 `POST /reminders/send` (admin) or the **Send reminders** button emails every client with missing documents, skipping anyone reminded in the last 7 days. Set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD` and `SMTP_FROM` to use any SMTP provider. Without them, emails are written to the log. To send on a schedule, run this from cron or your host's scheduler:
@@ -221,7 +239,7 @@ python -m app.manage send-reminders            # --dry-run to preview
 | `GET` | `/documents/{id}/file?expires=&sig=` | Original upload, through the signed link included with each document |
 | `GET` | `/reminders/preview` · `POST /reminders/send` | Reminder emails that would go out today · send them (admin) |
 | `GET` | `/audit/export?since=&until=` | Activity log as CSV (admin) |
-| `GET` / `POST` | `/users` · `POST /users/{id}/disable` | Manage sign-ins (admin) |
+| `GET` / `POST` | `/users` · `POST /users/{id}/disable` | Manage sign-ins (admin; also on the web app's Users screen) |
 
 Every endpoint except `/health`, `/auth/login` and signed file links needs `Authorization: Bearer <token>`. Changes are recorded under the signed-in user.
 
@@ -231,7 +249,7 @@ Every endpoint except `/health`, `/auth/login` and signed file links needs `Auth
 |---|---|---|
 | 1. Intake and review workflow | Extraction with confidence and checks, review dashboard, client portal, reminders preview, activity history, API, tests, live demo | ✅ Done |
 | 2. Real AI extraction | OpenAI / Claude extractor with schema-validated JSON, quote verification, hybrid cross-check, photos and scans, API mode in the web app with PDF and photo upload, PostgreSQL | ✅ Done |
-| 3. Accounts and security | Sign-in and roles, per-client data isolation, signed file links, reminder emails (manual and scheduled), audit export ✅ · EU object storage for files next | In progress |
+| 3. Accounts and security | Sign-in and roles, per-client data isolation, signed file links, reminder emails (manual and scheduled), audit export, EU object storage, user management | ✅ Done |
 | 4. Production | Docker, deploy, monitoring, accuracy dashboard, export to CSV / Xero / QuickBooks | Planned |
 
 Details are in [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -241,7 +259,6 @@ Details are in [docs/ROADMAP.md](docs/ROADMAP.md).
 - The rules extractor is tuned to UK-style documents in English. Unusual layouts get a low confidence score and go to review; they are not silently accepted. The AI extractor handles other layouts but costs per document.
 - The hosted demo runs in the browser with the rules extractor and text files. PDFs, photos and AI extraction need the API running (see above).
 - With the AI extractor, document content is sent to the provider you choose. Check their data-retention terms (and use an EU endpoint if needed) before using real client data.
-- Original files are stored in the database. Moving them to EU object storage (S3-compatible) with encryption at rest is the remaining part of milestone 3.
 - Sessions and the failed-sign-in limit live in one API process. Running several API processes needs a shared limit (milestone 4).
 - Get an independent security review before handling real client data.
 

@@ -34,7 +34,7 @@ Done:
 
 Moved to milestone 4: an accuracy report that runs each extractor over a labelled sample set.
 
-## Milestone 3: Accounts, security and reminders (in progress)
+## Milestone 3: Accounts, security and reminders ✅
 
 Done:
 
@@ -45,10 +45,8 @@ Done:
 - Audit log export as CSV, safe to open in spreadsheet apps.
 - Sign-in screen and role-based views in the web app.
 
-Next:
-
-- File storage in EU object storage (S3-compatible) with encryption at rest.
-- User management screens in the web app (the API already supports it).
+- Original files in the database, a local folder or S3-compatible EU object storage with server-side encryption.
+- User management screen for admins: add clients, reviewers and admins, and disable access.
 
 ## Milestone 4: Production and integrations
 
