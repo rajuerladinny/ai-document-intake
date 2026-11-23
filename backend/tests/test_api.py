@@ -17,7 +17,7 @@ def client():
 
 
 def test_health(client):
-    assert client.get("/health").json() == {"status": "ok", "extractor": "rules"}
+    assert client.get("/health").json() == {"status": "ok", "extractor": "rules", "database": "sqlite"}
 
 
 def test_lists_seeded_clients_and_documents(client):
